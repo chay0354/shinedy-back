@@ -1,4 +1,4 @@
-import { isDbEnabled, getSupabase } from './supabase.js';
+import { isDbEnabled, getSupabase, getUserSupabase } from './supabase.js';
 
 function rowToUnit(row) {
   return {
@@ -153,7 +153,10 @@ export async function loadUserSession(userId, state) {
   return { userOrders, userPouches, profile };
 }
 
-export async function persistUserSession(userId, state, userOrders, userPouches) {
+export async function persistUserSession(userId, state, userOrders, userPouches, userToken) {
+  const client = getUserSupabase(userToken) || getSupabase();
+  if (!client) throw new Error('Database not configured');
+
   const profileUpdate = {
     subscribed: state.subscribed,
     plan_id: state.planId,
@@ -178,24 +181,12 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
     updated_at: new Date().toISOString(),
   };
 
-  const { error: profileError } = await getSupabase()
+  const { error: profileError } = await client
     .from('profiles')
     .update(profileUpdate)
     .eq('id', userId);
   if (profileError) throw profileError;
 
-  for (const u of state.units.filter((x) => x.ownerUserId === userId || x.demoOnly)) {
-    const { error } = await getSupabase().from('units').upsert({
-      id: u.id,
-      model_id: u.modelId,
-      status: u.status,
-      demo_only: u.demoOnly,
-      owner_user_id: u.ownerUserId || userId,
-    });
-    if (error) throw error;
-  }
-
-  const demoOrders = state.orders.filter((o) => !o.userId);
   const allUserOrders = [
     ...userOrders,
     ...state.orders.filter((o) => o.userId === userId),
@@ -203,7 +194,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   const uniqueOrders = [...new Map(allUserOrders.map((o) => [o.id, o])).values()];
 
   for (const o of uniqueOrders) {
-    const { error } = await getSupabase().from('orders').upsert({
+    const { error } = await client.from('orders').upsert({
       id: o.id,
       user_id: o.userId || userId,
       type: o.type,
@@ -219,7 +210,6 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
     if (error) throw error;
   }
 
-  const demoPouches = state.returnPouches.filter((p) => !p.userId);
   const allUserPouches = [
     ...userPouches,
     ...state.returnPouches.filter((p) => p.userId === userId),
@@ -227,7 +217,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   const uniquePouches = [...new Map(allUserPouches.map((p) => [p.id, p])).values()];
 
   for (const p of uniquePouches) {
-    const { error } = await getSupabase().from('return_pouches').upsert({
+    const { error } = await client.from('return_pouches').upsert({
       id: p.id,
       user_id: p.userId || userId,
       qr: p.qr,
@@ -245,55 +235,11 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
     });
     if (error) throw error;
   }
-
-  for (const row of demoOrders) {
-    await getSupabase().from('orders').upsert({
-      id: row.id,
-      user_id: null,
-      type: row.type,
-      customer_name: row.customerName,
-      items: row.items,
-      return_items: row.returnItems || [],
-      new_items: row.newItems || [],
-      status: row.status,
-      order_date: row.date,
-      qr: row.qr,
-      pouch_id: row.pouchId,
-    });
-  }
-
-  for (const row of demoPouches) {
-    await getSupabase().from('return_pouches').upsert({
-      id: row.id,
-      user_id: null,
-      qr: row.qr,
-      order_id: row.orderId,
-      customer_name: row.customerName,
-      return_items: row.returnItems,
-      new_items: row.newItems || [],
-      status: row.status,
-      scanned: row.scanned,
-      created_at_label: row.createdAt,
-      demo_customer: row.demoCustomer ?? false,
-      pending_points: row.pendingPoints ?? 0,
-      points_credited: row.pointsCredited ?? false,
-      inventory_cleared: row.inventoryCleared ?? false,
-    });
-  }
-
-  for (const u of state.units.filter((x) => !x.demoOnly && !x.ownerUserId)) {
-    await getSupabase().from('units').upsert({
-      id: u.id,
-      model_id: u.modelId,
-      status: u.status,
-      demo_only: false,
-      owner_user_id: null,
-    });
-  }
 }
 
-export async function updateRegistration(userId, patch) {
-  const { error } = await getSupabase().from('profiles').update(patch).eq('id', userId);
+export async function updateRegistration(userId, patch, userToken = null) {
+  const client = getUserSupabase(userToken) || getSupabase();
+  const { error } = await client.from('profiles').update(patch).eq('id', userId);
   if (error) throw error;
 }
 

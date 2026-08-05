@@ -1,5 +1,5 @@
 import dns from 'node:dns';
-import { createAdminClient, verifyCredentials, resolveEnv } from '@supabase/server/core';
+import { createAdminClient, createContextClient, verifyCredentials, resolveEnv } from '@supabase/server/core';
 import { createClient } from '@supabase/supabase-js';
 
 dns.setDefaultResultOrder('ipv4first');
@@ -7,7 +7,7 @@ dns.setDefaultResultOrder('ipv4first');
 const url = process.env.SUPABASE_URL?.trim();
 const legacyServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
-const adminKey = secretKey || legacyServiceKey;
+const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY?.trim();
 
 function hasNewSecretKey() {
   if (secretKey) return true;
@@ -30,6 +30,26 @@ function supabaseClientOptions() {
       headers: { Connection: 'close' },
     },
   };
+}
+
+const adminKey = secretKey || legacyServiceKey;
+
+function publishableEnv() {
+  if (!publishableKey) return undefined;
+  return { url, publishableKeys: { default: publishableKey } };
+}
+
+export function getUserSupabase(token) {
+  if (!isDbEnabled || !token) return null;
+  try {
+    return createContextClient({
+      auth: { token },
+      env: publishableEnv(),
+    });
+  } catch (err) {
+    console.error('createContextClient failed:', err.message);
+    return null;
+  }
 }
 
 export function getSupabase() {

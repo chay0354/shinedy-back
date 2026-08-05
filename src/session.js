@@ -47,7 +47,7 @@ async function hydrateForRequest(req, { auth = false, staff = false } = {}) {
   return null;
 }
 
-async function persistAfterRequest(user, staff = false) {
+async function persistAfterRequest(req, user, staff = false) {
   if (!isDbEnabled) return;
 
   if (staff) {
@@ -60,23 +60,28 @@ async function persistAfterRequest(user, staff = false) {
     return;
   }
 
-    if (user) {
+  if (user) {
+    const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || null;
     const st = store.getMutableState();
     const userOrders = st.orders.filter((o) => o.userId === user.id);
     const userPouches = st.returnPouches.filter((p) => p.userId === user.id);
     const reg = st.registration;
     if (reg) {
-      await db.updateRegistration(user.id, {
-        registration_step: reg.step ?? 0,
-        phone: reg.phone,
-        phone_verified: reg.phoneVerified ?? false,
-        email_verified: reg.emailVerified ?? false,
-        id_document_url: reg.idDocumentUrl,
-        signature_completed: reg.signatureCompleted ?? false,
-        payment_method_added: reg.paymentMethodAdded ?? false,
-      });
+      await db.updateRegistration(
+        user.id,
+        {
+          registration_step: reg.step ?? 0,
+          phone: reg.phone,
+          phone_verified: reg.phoneVerified ?? false,
+          email_verified: reg.emailVerified ?? false,
+          id_document_url: reg.idDocumentUrl,
+          signature_completed: reg.signatureCompleted ?? false,
+          payment_method_added: reg.paymentMethodAdded ?? false,
+        },
+        token,
+      );
     }
-    await db.persistUserSession(user.id, st, userOrders, userPouches);
+    await db.persistUserSession(user.id, st, userOrders, userPouches, token);
   }
 }
 
@@ -84,7 +89,7 @@ export async function withRequest(req, fn, opts = {}) {
   const user = await hydrateForRequest(req, opts);
   try {
     const result = fn();
-    await persistAfterRequest(user, opts.staff);
+    await persistAfterRequest(req, user, opts.staff);
     return result;
   } catch (e) {
     throw e;
@@ -132,7 +137,15 @@ export async function registerUser({ email, password, fullName }) {
     email_confirm: true,
     user_metadata: { full_name: fullName },
   });
-  if (error) throw error;
+  if (error) {
+    const msg = error.message || '';
+    if (msg.includes('already been registered') || msg.includes('already registered')) {
+      const err = new Error('כבר קיים חשבון עם דוא״ל זה');
+      err.status = 422;
+      throw err;
+    }
+    throw error;
+  }
 
   await db.updateRegistration(data.user.id, {
     full_name: fullName,

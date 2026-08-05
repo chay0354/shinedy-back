@@ -535,6 +535,12 @@ export function login() {
   return getSnapshot();
 }
 
+export function registerMock({ fullName, email }) {
+  state.currentUserName = fullName;
+  state.registration = { fullName, email, step: 7 };
+  return login();
+}
+
 export function logout() {
   state.units = state.units.filter((u) => !u.demoOnly);
   state.returnPouches = state.returnPouches.filter((p) => !p.demoCustomer);
@@ -690,7 +696,8 @@ export function confirmExchange() {
   state.orderCounter += 1;
   state.exchangeReturns = [];
   state.exchangeCart = [];
-  state.flash = `נרתיק ${qr} נוצר — הסטטוס: בתהליך החזרה. הנקודות יחזרו לאחר אישור במחסן`;
+  state.flash =
+    'תהליך החזרה החל, ברגע שהחבילה תוחזר ותאושר על ידינו תזוכה בנקודות חזרה';
   return getSnapshot();
 }
 

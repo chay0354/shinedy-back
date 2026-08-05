@@ -74,23 +74,30 @@ app.post('/api/auth/register', async (req, res) => {
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
-    const { session: authSession } = await session.registerUser({
-      email,
-      password,
-      fullName: fullName.trim(),
-    });
-    req.headers.authorization = `Bearer ${authSession.access_token}`;
-    await session.withRequest(req, () => store.getSnapshot());
-    res.json({
-      session: {
-        access_token: authSession.access_token,
-        refresh_token: authSession.refresh_token,
-        expires_at: authSession.expires_at,
-      },
+    if (session.isDbEnabled) {
+      const { session: authSession } = await session.registerUser({
+        email,
+        password,
+        fullName: fullName.trim(),
+      });
+      req.headers.authorization = `Bearer ${authSession.access_token}`;
+      await session.withRequest(req, () => store.getSnapshot());
+      res.json({
+        session: {
+          access_token: authSession.access_token,
+          refresh_token: authSession.refresh_token,
+          expires_at: authSession.expires_at,
+        },
       ...store.getSnapshot(),
     });
+    return;
+    }
+    const snapshot = await session.withRequest(req, () =>
+      store.registerMock({ fullName: fullName.trim(), email: email.trim() }),
+    );
+    res.json(snapshot);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: e.message || 'שגיאה בהרשמה' });
   }
 });
 
@@ -244,9 +251,14 @@ app.post(
 export default app;
 
 if (process.env.VERCEL !== '1') {
-  session.initDbIfNeeded().finally(() => {
-    app.listen(PORT, () => {
-      console.log(`Shinedy API on http://localhost:${PORT} (db=${session.isDbEnabled})`);
+  session
+    .initDbIfNeeded()
+    .catch((err) => {
+      console.error('DB init failed:', err?.message || err);
+    })
+    .finally(() => {
+      app.listen(PORT, () => {
+        console.log(`Shinedy API on http://localhost:${PORT} (db=${session.isDbEnabled})`);
+      });
     });
-  });
 }
