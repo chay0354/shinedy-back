@@ -545,15 +545,7 @@ export function logout() {
   state.units = state.units.filter((u) => !u.demoOnly);
   state.returnPouches = state.returnPouches.filter((p) => !p.demoCustomer);
   state.orders = state.orders.filter((o) => o.customerName !== 'הלקוחה (דמו)');
-  state.subscribed = false;
-  state.planId = null;
-  state.pointsBalance = 0;
-  state.cart = [];
-  state.exchangeReturns = [];
-  state.exchangeCart = [];
-  state.myItems = [];
-  state.flash = null;
-  state.lastPouchId = null;
+  clearUserSession();
   return getSnapshot();
 }
 
