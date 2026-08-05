@@ -177,11 +177,16 @@ export async function registerUser({ email, password, fullName }) {
     throw error;
   }
 
-  await db.ensureUserProfile(data.user.id, {
-    full_name: fullName,
-    email,
-    registration_step: 7,
-  });
+  try {
+    await db.ensureUserProfile(data.user.id, {
+      full_name: fullName,
+      email,
+      registration_step: 7,
+    });
+  } catch (profileErr) {
+    // Trigger may already have created the row; don't fail registration for that.
+    console.error('ensureUserProfile after register:', profileErr?.message || profileErr);
+  }
 
   const { data: signIn, error: signInError } = await supabase.auth.signInWithPassword({
     email,

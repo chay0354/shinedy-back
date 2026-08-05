@@ -506,8 +506,11 @@ export function clearFlash() {
 /**
  * Demo-customer-only jewelry for return/exchange testing.
  * Uses dedicated units (demoOnly) so manager inventory/seed stock is untouched.
+ * Skipped in database mode — shared demo IDs collide across real users.
  */
 function seedDemoOwnedJewelry() {
+  if (isDbEnabled) return [];
+
   const owned = [];
 
   for (const spec of DEMO_OWNED_UNITS) {

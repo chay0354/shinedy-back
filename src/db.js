@@ -1,4 +1,4 @@
-import { isDbEnabled, getSupabase, getUserSupabase } from './supabase.js';
+import { isDbEnabled, getSupabase } from './supabase.js';
 
 function adminEmail() {
   return (process.env.ADMIN_EMAIL || 'admin@gmail.com').trim().toLowerCase();
@@ -109,14 +109,22 @@ export async function ensureUserProfile(userId, patch = {}) {
   const admin = getSupabase();
   if (!admin) throw new Error('Database not configured');
 
-  const { data: existing, error: readError } = await admin
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .limit(1);
-  if (readError) throw readError;
-  if (existing?.[0]) {
-    if (!Object.keys(patch).length) return existing[0];
+  async function readProfile() {
+    const { data, error } = await admin.from('profiles').select('*').eq('id', userId).limit(1);
+    if (error) throw error;
+    return data?.[0] || null;
+  }
+
+  let existing = await readProfile();
+
+  // Trigger handle_new_user usually creates the row; wait briefly if racing.
+  if (!existing) {
+    await new Promise((r) => setTimeout(r, 300));
+    existing = await readProfile();
+  }
+
+  if (existing) {
+    if (!Object.keys(patch).length) return existing;
     const { data, error } = await admin
       .from('profiles')
       .update(patch)
@@ -124,7 +132,7 @@ export async function ensureUserProfile(userId, patch = {}) {
       .select('*')
       .limit(1);
     if (error) throw error;
-    return data?.[0] || existing[0];
+    return data?.[0] || existing;
   }
 
   const { data: authData, error: authError } = await admin.auth.admin.getUserById(userId);
@@ -133,13 +141,14 @@ export async function ensureUserProfile(userId, patch = {}) {
   const meta = authData.user.user_metadata || {};
   const row = {
     id: userId,
-    email: authData.user.email,
+    email: patch.email ?? authData.user.email,
     full_name: patch.full_name ?? meta.full_name ?? '',
     phone: patch.phone ?? meta.phone ?? '',
+    registration_step: patch.registration_step ?? 0,
     ...patch,
   };
 
-  const { data, error } = await admin.from('profiles').insert(row).select('*').limit(1);
+  const { data, error } = await admin.from('profiles').upsert(row, { onConflict: 'id' }).select('*').limit(1);
   if (error) throw error;
   return data?.[0];
 }
@@ -235,7 +244,8 @@ async function persistUserUnits(userId, state) {
 }
 
 export async function persistUserSession(userId, state, userOrders, userPouches, userToken) {
-  const client = getUserSupabase(userToken) || getSupabase();
+  // Always use the secret/admin client for writes so RLS never blocks server flows.
+  const client = getSupabase();
   if (!client) throw new Error('Database not configured');
 
   const profileUpdate = {
@@ -320,8 +330,9 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
   }
 }
 
-export async function updateRegistration(userId, patch, userToken = null) {
-  const client = getUserSupabase(userToken) || getSupabase();
+export async function updateRegistration(userId, patch, _userToken = null) {
+  const client = getSupabase();
+  if (!client) throw new Error('Database not configured');
   const { error } = await client.from('profiles').update(patch).eq('id', userId);
   if (error) throw error;
 }

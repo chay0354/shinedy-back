@@ -56,6 +56,13 @@ export function getSupabase() {
   if (!isDbEnabled) return null;
   if (adminClient) return adminClient;
 
+  // Prefer supabase-js with the secret key so PostgREST always bypasses RLS.
+  // createAdminClient can fail to attach the secret in some Vercel env setups.
+  if (adminKey) {
+    adminClient = createClient(url, adminKey, supabaseClientOptions());
+    return adminClient;
+  }
+
   if (hasNewSecretKey()) {
     try {
       adminClient = createAdminClient({
@@ -69,10 +76,6 @@ export function getSupabase() {
     } catch (err) {
       console.error('createAdminClient failed:', err.message);
     }
-  }
-
-  if (adminKey) {
-    adminClient = createClient(url, adminKey, supabaseClientOptions());
   }
 
   return adminClient;
