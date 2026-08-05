@@ -67,7 +67,7 @@ app.get('/api/health/db', async (_req, res) => {
 
 app.get('/api/state', wrap(() => store.getSnapshot()));
 
-app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -128,7 +128,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.post('/api/auth/logout', wrap(() => store.logout(), { auth: session.isDbEnabled }));
+app.post('/api/auth/logout', wrap(() => store.logout(), { auth: false }));
 
 app.patch(
   '/api/auth/registration',
