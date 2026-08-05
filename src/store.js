@@ -516,8 +516,8 @@ export function subscribe(planId) {
   state.pointsBalance = plan.points;
   state.myItems = [];
   if (state.registration) state.registration.step = 7;
-  const owned = seedDemoOwnedJewelry();
-  state.flash = `הצטרפת למסלול ${plan.name} — ${owned.length} תכשיטים כבר אצלך לבדיקת החלפה`;
+  seedDemoOwnedJewelry();
+  state.flash = null;
   return getSnapshot();
 }
 
