@@ -1,4 +1,4 @@
-import { isDbEnabled, supabase } from './supabase.js';
+import { isDbEnabled, getSupabase } from './supabase.js';
 
 function rowToUnit(row) {
   return {
@@ -48,11 +48,11 @@ function rowToPouch(row) {
 export async function loadCatalogIntoState(state) {
   const [plansRes, productsRes, unitsRes, seedOrdersRes, seedPouchesRes] =
     await Promise.all([
-      supabase.from('plans').select('*'),
-      supabase.from('products').select('*'),
-      supabase.from('units').select('*'),
-      supabase.from('orders').select('*').is('user_id', null),
-      supabase.from('return_pouches').select('*').is('user_id', null),
+      getSupabase().from('plans').select('*'),
+      getSupabase().from('products').select('*'),
+      getSupabase().from('units').select('*'),
+      getSupabase().from('orders').select('*').is('user_id', null),
+      getSupabase().from('return_pouches').select('*').is('user_id', null),
     ]);
 
   if (plansRes.error) throw plansRes.error;
@@ -95,7 +95,7 @@ export async function loadCatalogIntoState(state) {
 }
 
 export async function loadUserSession(userId, state) {
-  const { data: profile, error } = await supabase
+  const { data: profile, error } = await getSupabase()
     .from('profiles')
     .select('*')
     .eq('id', userId)
@@ -104,9 +104,9 @@ export async function loadUserSession(userId, state) {
   if (error) throw error;
 
   const [ordersRes, pouchesRes, ownedUnitsRes] = await Promise.all([
-    supabase.from('orders').select('*').eq('user_id', userId),
-    supabase.from('return_pouches').select('*').eq('user_id', userId),
-    supabase.from('units').select('*').eq('owner_user_id', userId),
+    getSupabase().from('orders').select('*').eq('user_id', userId),
+    getSupabase().from('return_pouches').select('*').eq('user_id', userId),
+    getSupabase().from('units').select('*').eq('owner_user_id', userId),
   ]);
 
   if (ordersRes.error) throw ordersRes.error;
@@ -178,14 +178,14 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
     updated_at: new Date().toISOString(),
   };
 
-  const { error: profileError } = await supabase
+  const { error: profileError } = await getSupabase()
     .from('profiles')
     .update(profileUpdate)
     .eq('id', userId);
   if (profileError) throw profileError;
 
   for (const u of state.units.filter((x) => x.ownerUserId === userId || x.demoOnly)) {
-    const { error } = await supabase.from('units').upsert({
+    const { error } = await getSupabase().from('units').upsert({
       id: u.id,
       model_id: u.modelId,
       status: u.status,
@@ -203,7 +203,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   const uniqueOrders = [...new Map(allUserOrders.map((o) => [o.id, o])).values()];
 
   for (const o of uniqueOrders) {
-    const { error } = await supabase.from('orders').upsert({
+    const { error } = await getSupabase().from('orders').upsert({
       id: o.id,
       user_id: o.userId || userId,
       type: o.type,
@@ -227,7 +227,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   const uniquePouches = [...new Map(allUserPouches.map((p) => [p.id, p])).values()];
 
   for (const p of uniquePouches) {
-    const { error } = await supabase.from('return_pouches').upsert({
+    const { error } = await getSupabase().from('return_pouches').upsert({
       id: p.id,
       user_id: p.userId || userId,
       qr: p.qr,
@@ -247,7 +247,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   }
 
   for (const row of demoOrders) {
-    await supabase.from('orders').upsert({
+    await getSupabase().from('orders').upsert({
       id: row.id,
       user_id: null,
       type: row.type,
@@ -263,7 +263,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   }
 
   for (const row of demoPouches) {
-    await supabase.from('return_pouches').upsert({
+    await getSupabase().from('return_pouches').upsert({
       id: row.id,
       user_id: null,
       qr: row.qr,
@@ -282,7 +282,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
   }
 
   for (const u of state.units.filter((x) => !x.demoOnly && !x.ownerUserId)) {
-    await supabase.from('units').upsert({
+    await getSupabase().from('units').upsert({
       id: u.id,
       model_id: u.modelId,
       status: u.status,
@@ -293,13 +293,13 @@ export async function persistUserSession(userId, state, userOrders, userPouches)
 }
 
 export async function updateRegistration(userId, patch) {
-  const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
+  const { error } = await getSupabase().from('profiles').update(patch).eq('id', userId);
   if (error) throw error;
 }
 
 export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   for (const u of state.units.filter((x) => !x.demoOnly && !x.ownerUserId)) {
-    const { error } = await supabase.from('units').upsert({
+    const { error } = await getSupabase().from('units').upsert({
       id: u.id,
       model_id: u.modelId,
       status: u.status,
@@ -310,7 +310,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const o of seedOrders) {
-    const { error } = await supabase.from('orders').upsert({
+    const { error } = await getSupabase().from('orders').upsert({
       id: o.id,
       user_id: null,
       type: o.type,
@@ -327,7 +327,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const p of seedPouches) {
-    const { error } = await supabase.from('return_pouches').upsert({
+    const { error } = await getSupabase().from('return_pouches').upsert({
       id: p.id,
       user_id: null,
       qr: p.qr,
@@ -347,7 +347,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const p of state.plans) {
-    await supabase.from('plans').upsert({
+    await getSupabase().from('plans').upsert({
       id: p.id,
       name: p.name,
       price: p.price,
@@ -360,7 +360,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const p of state.products) {
-    await supabase.from('products').upsert({
+    await getSupabase().from('products').upsert({
       id: p.id,
       name: p.name,
       category: p.category,

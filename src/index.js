@@ -3,6 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import * as store from './store.js';
 import * as session from './session.js';
+import { pingDatabase } from './supabase.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -32,7 +33,8 @@ function wrap(fn, opts = {}) {
       }
       res.json(data ?? store.getSnapshot());
     } catch (e) {
-      res.status(e.status || 400).json({ error: e.message });
+      const message = e.cause?.message ? `${e.message}: ${e.cause.message}` : e.message;
+      res.status(e.status || 400).json({ error: message });
     }
   };
 }
@@ -43,6 +45,11 @@ app.get('/api/health', (_req, res) => {
     mock: process.env.MOCK_MODE === 'true',
     database: session.isDbEnabled,
   });
+});
+
+app.get('/api/health/db', async (_req, res) => {
+  const result = await pingDatabase();
+  res.status(result.ok ? 200 : 503).json(result);
 });
 
 app.get('/api/state', wrap(() => store.getSnapshot()));

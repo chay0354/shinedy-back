@@ -95,7 +95,8 @@ export async function registerUser({ email, password, fullName, phone }) {
   if (!isDbEnabled) {
     throw new Error('Database mode required for registration');
   }
-  const { supabase } = await import('./supabase.js');
+  const { getSupabase } = await import('./supabase.js');
+  const supabase = getSupabase();
   const { data, error } = await supabase.auth.admin.createUser({
     email,
     password,
@@ -124,7 +125,8 @@ export async function loginUser({ email, password }) {
   if (!isDbEnabled) {
     return { session: null, snapshot: store.login() };
   }
-  const { supabase } = await import('./supabase.js');
+  const { getSupabase } = await import('./supabase.js');
+  const supabase = getSupabase();
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
   return { user: data.user, session: data.session };

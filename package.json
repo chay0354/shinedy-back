@@ -8,6 +8,7 @@
     "start": "node src/index.js"
   },
   "dependencies": {
+    "@supabase/server": "^1.4.1",
     "@supabase/supabase-js": "^2.112.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
