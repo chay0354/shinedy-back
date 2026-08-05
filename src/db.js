@@ -105,14 +105,60 @@ export async function loadCatalogIntoState(state) {
   return { seedOrders, seedPouches };
 }
 
-export async function loadUserSession(userId, state) {
-  const { data: profile, error } = await getSupabase()
+export async function ensureUserProfile(userId, patch = {}) {
+  const admin = getSupabase();
+  if (!admin) throw new Error('Database not configured');
+
+  const { data: existing, error: readError } = await admin
     .from('profiles')
     .select('*')
     .eq('id', userId)
-    .single();
+    .limit(1);
+  if (readError) throw readError;
+  if (existing?.[0]) {
+    if (!Object.keys(patch).length) return existing[0];
+    const { data, error } = await admin
+      .from('profiles')
+      .update(patch)
+      .eq('id', userId)
+      .select('*')
+      .limit(1);
+    if (error) throw error;
+    return data?.[0] || existing[0];
+  }
 
+  const { data: authData, error: authError } = await admin.auth.admin.getUserById(userId);
+  if (authError) throw authError;
+
+  const meta = authData.user.user_metadata || {};
+  const row = {
+    id: userId,
+    email: authData.user.email,
+    full_name: patch.full_name ?? meta.full_name ?? '',
+    phone: patch.phone ?? meta.phone ?? '',
+    ...patch,
+  };
+
+  const { data, error } = await admin.from('profiles').insert(row).select('*').limit(1);
   if (error) throw error;
+  return data?.[0];
+}
+
+async function loadProfile(userId) {
+  const { data, error } = await getSupabase()
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] || null;
+}
+
+export async function loadUserSession(userId, state) {
+  let profile = await loadProfile(userId);
+  if (!profile) {
+    profile = await ensureUserProfile(userId);
+  }
 
   const [ordersRes, pouchesRes, ownedUnitsRes] = await Promise.all([
     getSupabase().from('orders').select('*').eq('user_id', userId),
@@ -164,8 +210,9 @@ export async function loadUserSession(userId, state) {
   return { userOrders, userPouches, profile };
 }
 
-async function persistUserUnits(userId, state, userToken) {
-  const client = getUserSupabase(userToken) || getSupabase();
+async function persistUserUnits(userId, state) {
+  const client = getSupabase();
+  if (!client) throw new Error('Database not configured');
   const unitIds = new Set(state.myItems || []);
   for (const o of state.orders) {
     if (o.userId !== userId) continue;
@@ -221,7 +268,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     .eq('id', userId);
   if (profileError) throw profileError;
 
-  await persistUserUnits(userId, state, userToken);
+  await persistUserUnits(userId, state);
 
   const allUserOrders = [
     ...userOrders,
@@ -280,13 +327,11 @@ export async function updateRegistration(userId, patch, userToken = null) {
 }
 
 export async function getUserRole(userId) {
-  const { data, error } = await getSupabase()
-    .from('profiles')
-    .select('role, email')
-    .eq('id', userId)
-    .single();
-  if (error) throw error;
-  return resolveUserRole(data);
+  let profile = await loadProfile(userId);
+  if (!profile) {
+    profile = await ensureUserProfile(userId);
+  }
+  return resolveUserRole(profile);
 }
 
 export async function ensureAdminByEmail(userId, email) {

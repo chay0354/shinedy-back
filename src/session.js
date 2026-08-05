@@ -177,7 +177,7 @@ export async function registerUser({ email, password, fullName }) {
     throw error;
   }
 
-  await db.updateRegistration(data.user.id, {
+  await db.ensureUserProfile(data.user.id, {
     full_name: fullName,
     email,
     registration_step: 7,
