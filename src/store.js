@@ -1,3 +1,5 @@
+import { isDbEnabled } from './supabase.js';
+
 const STATUSES = ['זמין', 'שמור', 'אצל לקוחה', 'בניקוי', 'בתיקון', 'בדרך ללקוחה', 'בדרך חזרה'];
 const STAGES = ['ליקוט', 'בקרה', 'אריזה', 'נשלח'];
 
@@ -231,6 +233,31 @@ function pruneMyItems() {
   state.myItems = state.myItems.filter((uid) => Boolean(unit(uid)));
 }
 
+/** Fix units still marked זמין while listed on the customer's account. */
+function reconcileCustomerUnits() {
+  if (!state.currentUserId) return;
+  for (const uid of state.myItems) {
+    const idx = state.units.findIndex((u) => u.id === uid);
+    if (idx < 0) continue;
+    const u = state.units[idx];
+    if (u.status === 'זמין' || u.status === 'בדרך ללקוחה') {
+      state.units[idx] = {
+        ...u,
+        status: 'אצל לקוחה',
+        ownerUserId: state.currentUserId,
+      };
+    }
+  }
+  if (!isDbEnabled) return;
+  for (const o of state.orders) {
+    if (o.userId !== state.currentUserId || o.type !== 'הזמנה') continue;
+    if (o.status === 'נשלח') continue;
+    if ((o.items || []).some((uid) => state.myItems.includes(uid))) {
+      o.status = 'נשלח';
+    }
+  }
+}
+
 function decorateProduct(p, budget, cartArr) {
   const avail = availableUnitsForProduct(p.id).length;
   const inCart = cartArr.includes(p.id);
@@ -309,6 +336,7 @@ function currentPlan() {
 
 export function getSnapshot() {
   pruneMyItems();
+  reconcileCustomerUnits();
   pruneExchangeReturns();
   const plan = currentPlan();
   const pointsTotal = state.planId ? plan.points : 0;
@@ -567,10 +595,15 @@ export function removeFromCart(productId) {
 export function confirmOrder() {
   if (!state.cart.length) throw new Error('הסל ריק');
   const orderItems = [];
+  const unitStatus = isDbEnabled ? 'אצל לקוחה' : 'בדרך ללקוחה';
   for (const pid of state.cart) {
     const idx = state.units.findIndex((u) => u.modelId === pid && u.status === 'זמין');
     if (idx > -1) {
-      state.units[idx] = { ...state.units[idx], status: 'בדרך ללקוחה' };
+      state.units[idx] = {
+        ...state.units[idx],
+        status: unitStatus,
+        ownerUserId: state.currentUserId || null,
+      };
       orderItems.push(state.units[idx].id);
     }
   }
@@ -584,7 +617,7 @@ export function confirmOrder() {
     userId: state.currentUserId || null,
     customerName: state.currentUserName || 'הלקוחה (דמו)',
     items: orderItems,
-    status: 'ליקוט',
+    status: isDbEnabled ? 'נשלח' : 'ליקוט',
     date: 'היום',
   };
   state.myItems = [...state.myItems, ...orderItems];

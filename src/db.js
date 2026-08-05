@@ -164,6 +164,29 @@ export async function loadUserSession(userId, state) {
   return { userOrders, userPouches, profile };
 }
 
+async function persistUserUnits(userId, state, userToken) {
+  const client = getUserSupabase(userToken) || getSupabase();
+  const unitIds = new Set(state.myItems || []);
+  for (const o of state.orders) {
+    if (o.userId !== userId) continue;
+    for (const uid of o.items || []) unitIds.add(uid);
+    for (const uid of o.returnItems || []) unitIds.add(uid);
+  }
+
+  for (const uid of unitIds) {
+    const u = state.units.find((x) => x.id === uid);
+    if (!u) continue;
+    const { error } = await client.from('units').upsert({
+      id: u.id,
+      model_id: u.modelId,
+      status: u.status,
+      demo_only: u.demoOnly ?? false,
+      owner_user_id: u.ownerUserId || userId,
+    });
+    if (error) throw error;
+  }
+}
+
 export async function persistUserSession(userId, state, userOrders, userPouches, userToken) {
   const client = getUserSupabase(userToken) || getSupabase();
   if (!client) throw new Error('Database not configured');
@@ -197,6 +220,8 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     .update(profileUpdate)
     .eq('id', userId);
   if (profileError) throw profileError;
+
+  await persistUserUnits(userId, state, userToken);
 
   const allUserOrders = [
     ...userOrders,
