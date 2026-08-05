@@ -91,7 +91,36 @@ export async function withRequest(req, fn, opts = {}) {
   }
 }
 
-export async function registerUser({ email, password, fullName, phone }) {
+export async function deleteAllUsers() {
+  if (!isDbEnabled) {
+    throw new Error('Database mode required');
+  }
+  const { getSupabase } = await import('./supabase.js');
+  const supabase = getSupabase();
+  if (!supabase) throw new Error('Supabase not configured');
+
+  let deleted = 0;
+  let page = 1;
+
+  while (true) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
+    if (error) throw error;
+    if (!data.users.length) break;
+
+    for (const user of data.users) {
+      const { error: delErr } = await supabase.auth.admin.deleteUser(user.id);
+      if (delErr) throw delErr;
+      deleted += 1;
+    }
+
+    if (data.users.length < 100) break;
+    page += 1;
+  }
+
+  return { deleted };
+}
+
+export async function registerUser({ email, password, fullName }) {
   if (!isDbEnabled) {
     throw new Error('Database mode required for registration');
   }
@@ -101,15 +130,14 @@ export async function registerUser({ email, password, fullName, phone }) {
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: fullName, phone },
+    user_metadata: { full_name: fullName },
   });
   if (error) throw error;
 
   await db.updateRegistration(data.user.id, {
     full_name: fullName,
-    phone,
     email,
-    registration_step: 1,
+    registration_step: 7,
   });
 
   const { data: signIn, error: signInError } = await supabase.auth.signInWithPassword({

@@ -70,13 +70,14 @@ app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: session.isDb
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, fullName, phone } = req.body || {};
-    if (!email || !password) throw new Error('חסרים אימייל או סיסמה');
+    const { email, password, fullName } = req.body || {};
+    if (!email || !password || !fullName?.trim()) {
+      throw new Error('חסרים שם, אימייל או סיסמה');
+    }
     const { session: authSession } = await session.registerUser({
       email,
       password,
-      fullName: fullName || '',
-      phone: phone || '',
+      fullName: fullName.trim(),
     });
     req.headers.authorization = `Bearer ${authSession.access_token}`;
     await session.withRequest(req, () => store.getSnapshot());
@@ -230,6 +231,15 @@ app.post(
 );
 
 app.post('/api/reset', wrap(() => store.resetStore(), { staff: true }));
+
+app.post(
+  '/api/admin/clear-users',
+  wrap(async () => {
+    const result = await session.deleteAllUsers();
+    store.resetStore();
+    return { ok: true, ...result, snapshot: store.getSnapshot() };
+  }, { staff: true }),
+);
 
 export default app;
 
