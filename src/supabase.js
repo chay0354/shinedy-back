@@ -1,9 +1,13 @@
+import dns from 'node:dns';
 import { createAdminClient, verifyCredentials, resolveEnv } from '@supabase/server/core';
 import { createClient } from '@supabase/supabase-js';
+
+dns.setDefaultResultOrder('ipv4first');
 
 const url = process.env.SUPABASE_URL?.trim();
 const legacyServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
 const secretKey = process.env.SUPABASE_SECRET_KEY?.trim();
+const adminKey = secretKey || legacyServiceKey;
 
 function hasNewSecretKey() {
   if (secretKey) return true;
@@ -14,16 +18,23 @@ function hasNewSecretKey() {
 export const isDbEnabled = Boolean(
   process.env.USE_DATABASE === 'true' &&
     url?.startsWith('https://') &&
-    (hasNewSecretKey() || legacyServiceKey || secretKey),
+    (hasNewSecretKey() || legacyServiceKey),
 );
 
 let adminClient = null;
 
+function supabaseClientOptions() {
+  return {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: {
+      headers: { Connection: 'close' },
+    },
+  };
+}
+
 export function getSupabase() {
   if (!isDbEnabled) return null;
   if (adminClient) return adminClient;
-
-  const adminKey = secretKey || legacyServiceKey;
 
   if (hasNewSecretKey()) {
     try {
@@ -32,6 +43,7 @@ export function getSupabase() {
           url,
           secretKeys: secretKey ? { default: secretKey } : undefined,
         },
+        supabaseOptions: supabaseClientOptions(),
       });
       return adminClient;
     } catch (err) {
@@ -40,25 +52,60 @@ export function getSupabase() {
   }
 
   if (adminKey) {
-    adminClient = createClient(url, adminKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    });
+    adminClient = createClient(url, adminKey, supabaseClientOptions());
   }
 
   return adminClient;
 }
 
 export async function pingDatabase() {
-  const client = getSupabase();
-  if (!client) {
-    return { ok: false, error: 'Database not configured (check SUPABASE_URL and SUPABASE_SECRET_KEY)' };
+  const host = url ? new URL(url).hostname : null;
+
+  if (!url?.startsWith('https://')) {
+    return {
+      ok: false,
+      error: 'SUPABASE_URL must start with https://',
+      host,
+    };
   }
 
-  const { error } = await client.from('plans').select('id').limit(1);
-  if (error) {
-    return { ok: false, error: error.message, details: error.code || error.hint || null };
+  if (!adminKey) {
+    return {
+      ok: false,
+      error: 'Missing SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY',
+      host,
+    };
   }
-  return { ok: true };
+
+  try {
+    const res = await fetch(`${url}/rest/v1/plans?select=id&limit=1`, {
+      headers: {
+        apikey: adminKey,
+        Authorization: `Bearer ${adminKey}`,
+        Connection: 'close',
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        ok: false,
+        error: `HTTP ${res.status}`,
+        details: body.slice(0, 300),
+        host,
+      };
+    }
+
+    return { ok: true, host };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e.message,
+      cause: e.cause?.message ?? null,
+      code: e.cause?.code ?? null,
+      host,
+    };
+  }
 }
 
 export async function getUserFromToken(token) {

@@ -23,6 +23,18 @@ app.use(
 );
 app.use(express.json());
 
+app.use((err, _req, res, next) => {
+  if (err instanceof SyntaxError && 'body' in err) {
+    res.status(400).json({ error: 'Invalid JSON in request body' });
+    return;
+  }
+  next(err);
+});
+
+app.get('/', (_req, res) => {
+  res.redirect('/api/health');
+});
+
 function wrap(fn, opts = {}) {
   return async (req, res) => {
     try {

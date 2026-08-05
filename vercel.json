@@ -1,5 +1,8 @@
 {
   "version": 2,
   "builds": [{ "src": "api/index.js", "use": "@vercel/node" }],
-  "routes": [{ "src": "/(.*)", "dest": "api/index.js" }]
+  "routes": [{ "src": "/(.*)", "dest": "api/index.js" }],
+  "env": {
+    "NODE_OPTIONS": "--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=500"
+  }
 }
