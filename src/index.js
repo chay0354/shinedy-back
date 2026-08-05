@@ -3,6 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import * as store from './store.js';
 import * as session from './session.js';
+import * as db from './db.js';
 import { pingDatabase } from './supabase.js';
 
 const app = express();
@@ -66,7 +67,7 @@ app.get('/api/health/db', async (_req, res) => {
 
 app.get('/api/state', wrap(() => store.getSnapshot()));
 
-app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: session.isDbEnabled }));
+app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -75,11 +76,12 @@ app.post('/api/auth/register', async (req, res) => {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
     if (session.isDbEnabled) {
-      const { session: authSession } = await session.registerUser({
+      const { user, session: authSession } = await session.registerUser({
         email,
         password,
         fullName: fullName.trim(),
       });
+      await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
       await session.withRequest(req, () => store.getSnapshot());
       res.json({
@@ -148,39 +150,39 @@ app.patch(
       email: st.registration?.email,
     };
     return store.getSnapshot();
-  }, { auth: session.isDbEnabled }),
+  }, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
-app.post('/api/subscribe', wrap((req) => store.subscribe(req.body.planId), { auth: session.isDbEnabled }));
+app.post('/api/subscribe', wrap((req) => store.subscribe(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { auth: session.isDbEnabled }));
+app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/cart/remove', wrap((req) => store.removeFromCart(req.body.productId), { auth: session.isDbEnabled }));
+app.post('/api/cart/remove', wrap((req) => store.removeFromCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/cart/confirm', wrap(() => store.confirmOrder(), { auth: session.isDbEnabled }));
+app.post('/api/cart/confirm', wrap(() => store.confirmOrder(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post(
   '/api/exchange/toggle-return',
-  wrap((req) => store.toggleReturn(req.body.unitId), { auth: session.isDbEnabled }),
+  wrap((req) => store.toggleReturn(req.body.unitId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
 app.post(
   '/api/exchange/add',
-  wrap((req) => store.addExchangeProduct(req.body.productId), { auth: session.isDbEnabled }),
+  wrap((req) => store.addExchangeProduct(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
 app.post(
   '/api/exchange/remove',
-  wrap((req) => store.removeExchangeProduct(req.body.productId), { auth: session.isDbEnabled }),
+  wrap((req) => store.removeExchangeProduct(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
-app.post('/api/exchange/confirm', wrap(() => store.confirmExchange(), { auth: session.isDbEnabled }));
+app.post('/api/exchange/confirm', wrap(() => store.confirmExchange(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/returns/last/clear', wrap(() => store.clearLastPouch(), { auth: session.isDbEnabled }));
+app.post('/api/returns/last/clear', wrap(() => store.clearLastPouch(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post(
   '/api/returns/:pouchId/cancel',
-  wrap((req) => store.cancelReturnPouch(req.params.pouchId), { auth: session.isDbEnabled }),
+  wrap((req) => store.cancelReturnPouch(req.params.pouchId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
 app.patch(
@@ -202,7 +204,7 @@ app.patch(
 
 app.post(
   '/api/warehouse/orders/:id/advance',
-  wrap((req) => store.advanceOrder(req.params.id), { staff: true }),
+  wrap((req) => store.advanceOrder(req.params.id), { staff: true, staffRoles: ['admin', 'warehouse'] }),
 );
 
 app.post(
@@ -212,7 +214,7 @@ app.post(
 
 app.post(
   '/api/warehouse/returns/scan',
-  wrap((req) => store.scanPouch(req.body.qr), { staff: true }),
+  wrap((req) => store.scanPouch(req.body.qr), { staff: true, staffRoles: ['admin', 'warehouse'] }),
 );
 
 app.post(

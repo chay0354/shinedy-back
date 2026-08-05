@@ -14,11 +14,38 @@ export async function initDbIfNeeded() {
   dbReady = true;
 }
 
-async function hydrateForRequest(req, { auth = false, staff = false } = {}) {
+async function requireStaffAccess(req, staffRoles = ['admin']) {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  const user = await getUserFromToken(token);
+  if (!user) {
+    const err = new Error('יש להתחבר');
+    err.status = 401;
+    throw err;
+  }
+  const role = await db.getUserRole(user.id);
+  if (!staffRoles.includes(role)) {
+    const err = new Error('אין הרשאת ניהול');
+    err.status = 403;
+    throw err;
+  }
+  return user;
+}
+
+function rejectStaffFromCustomerRoute() {
+  const st = store.getMutableState();
+  if (st.currentUserRole === 'admin' || st.currentUserRole === 'warehouse') {
+    const err = new Error('חשבון ניהול — אין גישה לאזור לקוחות');
+    err.status = 403;
+    throw err;
+  }
+}
+
+async function hydrateForRequest(req, { auth = false, staff = false, staffRoles = ['admin'], customerOnly = false } = {}) {
   await initDbIfNeeded();
   if (!isDbEnabled) return null;
 
   if (staff) {
+    await requireStaffAccess(req, staffRoles);
     store.clearUserSession();
     store.mergeOrders(seedOrders);
     store.mergePouches(seedPouches);
@@ -38,6 +65,9 @@ async function hydrateForRequest(req, { auth = false, staff = false } = {}) {
     const session = await db.loadUserSession(user.id, store.getMutableState());
     store.mergeOrders([...seedOrders, ...session.userOrders]);
     store.mergePouches([...seedPouches, ...session.userPouches]);
+    if (customerOnly) {
+      rejectStaffFromCustomerRoute();
+    }
     return user;
   }
 
@@ -170,6 +200,7 @@ export async function loginUser({ email, password }) {
   const supabase = getSupabase();
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
+  await db.ensureAdminByEmail(data.user.id, email);
   return { user: data.user, session: data.session };
 }
 

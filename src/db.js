@@ -1,5 +1,16 @@
 import { isDbEnabled, getSupabase, getUserSupabase } from './supabase.js';
 
+function adminEmail() {
+  return (process.env.ADMIN_EMAIL || 'admin@gmail.com').trim().toLowerCase();
+}
+
+export function resolveUserRole(profile) {
+  if ((profile?.email || '').trim().toLowerCase() === adminEmail()) {
+    return 'admin';
+  }
+  return profile?.role || 'customer';
+}
+
 function rowToUnit(row) {
   return {
     id: row.id,
@@ -114,7 +125,7 @@ export async function loadUserSession(userId, state) {
   if (ownedUnitsRes.error) throw ownedUnitsRes.error;
 
   state.currentUserId = userId;
-  state.currentUserRole = profile.role || 'customer';
+  state.currentUserRole = resolveUserRole(profile);
   state.currentUserName = profile.full_name || profile.email || 'לקוחה';
   state.subscribed = profile.subscribed;
   state.planId = profile.plan_id;
@@ -241,6 +252,43 @@ export async function updateRegistration(userId, patch, userToken = null) {
   const client = getUserSupabase(userToken) || getSupabase();
   const { error } = await client.from('profiles').update(patch).eq('id', userId);
   if (error) throw error;
+}
+
+export async function getUserRole(userId) {
+  const { data, error } = await getSupabase()
+    .from('profiles')
+    .select('role, email')
+    .eq('id', userId)
+    .single();
+  if (error) throw error;
+  return resolveUserRole(data);
+}
+
+export async function ensureAdminByEmail(userId, email) {
+  if ((email || '').trim().toLowerCase() !== adminEmail()) return false;
+
+  const patch = {
+    subscribed: false,
+    plan_id: null,
+    points_balance: 0,
+    cart: [],
+    exchange_returns: [],
+    exchange_cart: [],
+    my_items: [],
+    role: 'admin',
+  };
+
+  const { error } = await getSupabase().from('profiles').update(patch).eq('id', userId);
+  if (error) {
+    const fallback = { ...patch };
+    delete fallback.role;
+    const { error: fallbackError } = await getSupabase()
+      .from('profiles')
+      .update(fallback)
+      .eq('id', userId);
+    if (fallbackError) throw fallbackError;
+  }
+  return true;
 }
 
 export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
