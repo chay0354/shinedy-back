@@ -182,7 +182,7 @@ export async function loadUserSession(userId, state) {
   state.currentUserId = userId;
   state.currentUserRole = resolveUserRole(profile);
   state.currentUserName = profile.full_name || profile.email || 'לקוחה';
-  state.subscribed = profile.subscribed;
+  state.subscribed = Boolean(profile.subscribed || profile.plan_id);
   state.planId = profile.plan_id;
   state.pointsBalance = profile.points_balance;
   state.credits = profile.credits;
