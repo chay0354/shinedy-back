@@ -348,6 +348,9 @@ export function getSnapshot() {
   const pointsTotal = state.planId ? plan.points : 0;
   const remaining = remainingPoints();
   const exchangeAvail = exchangeAvailablePoints();
+  // Back-office data (stock levels, every order, customer list) is staff-only.
+  // Undefined keys are dropped by res.json, so customers never receive them.
+  const staff = isStaffViewer();
 
   return {
     subscribed: state.subscribed,
@@ -423,91 +426,97 @@ export function getSnapshot() {
       .filter(Boolean),
     exchangeCart: state.exchangeCart.map((id) => product(id)),
     exchangeAvail,
-    orders: state.orders.map(decorateOrder),
+    orders: staff ? state.orders.map(decorateOrder) : undefined,
     myOrders: state.orders.filter(isMyOrder).map(decorateCustomerOrder),
     myActiveOrders: state.orders
       .filter(isMyOrder)
       .map(decorateCustomerOrder)
       .filter((o) => o.isActive),
     // Manager customers table: seed fixtures only (demo user stays in /account)
-    customers: state.seedCustomers,
-    inventory: state.products.map((p) => ({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      units: state.units
-        .filter((u) => u.modelId === p.id && !u.demoOnly)
-        .map((u) => {
-          const st = STATUS_STYLE[u.status] || { bg: '#EEE', fg: '#555' };
-          return { ...u, badgeBg: st.bg, badgeFg: st.fg };
-        }),
-    })),
+    customers: staff ? state.seedCustomers : undefined,
+    inventory: staff
+      ? state.products.map((p) => ({
+          id: p.id,
+          name: p.name,
+          category: p.category,
+          units: state.units
+            .filter((u) => u.modelId === p.id && !u.demoOnly)
+            .map((u) => {
+              const st = STATUS_STYLE[u.status] || { bg: '#EEE', fg: '#555' };
+              return { ...u, badgeBg: st.bg, badgeFg: st.fg };
+            }),
+        }))
+      : undefined,
     statuses: STATUSES,
-    warehouseColumns: (() => {
-      const stageLabels = {
-        ליקוט: 'הזמנות לליקוט',
-        בקרה: 'בקרת איכות',
-        אריזה: 'אריזה',
-      };
-      const nextLabels = {
-        ליקוט: 'העבר לבקרת איכות',
-        בקרה: 'העבר לאריזה',
-        אריזה: 'סמן כנשלח',
-      };
-      const cols = ['ליקוט', 'בקרה', 'אריזה'].map((st) => ({
-        key: st,
-        label: stageLabels[st],
-        orders: state.orders
-          .filter((o) => o.status === st)
-          .map((o) => ({ ...decorateOrder(o), nextLabel: nextLabels[o.status] })),
-      }));
-      cols.push({
-        key: 'נשלח',
-        label: 'הושלם ונשלח',
-        orders: state.orders
-          .filter((o) => o.status === 'נשלח')
-          .map((o) => ({ ...decorateOrder(o), nextLabel: 'נשלח ✓' })),
-      });
-      return cols;
-    })(),
-    returnPouches: state.returnPouches.map(decoratePouch),
+    warehouseColumns: !staff
+      ? undefined
+      : (() => {
+          const stageLabels = {
+            ליקוט: 'הזמנות לליקוט',
+            בקרה: 'בקרת איכות',
+            אריזה: 'אריזה',
+          };
+          const nextLabels = {
+            ליקוט: 'העבר לבקרת איכות',
+            בקרה: 'העבר לאריזה',
+            אריזה: 'סמן כנשלח',
+          };
+          const cols = ['ליקוט', 'בקרה', 'אריזה'].map((st) => ({
+            key: st,
+            label: stageLabels[st],
+            orders: state.orders
+              .filter((o) => o.status === st)
+              .map((o) => ({ ...decorateOrder(o), nextLabel: nextLabels[o.status] })),
+          }));
+          cols.push({
+            key: 'נשלח',
+            label: 'הושלם ונשלח',
+            orders: state.orders
+              .filter((o) => o.status === 'נשלח')
+              .map((o) => ({ ...decorateOrder(o), nextLabel: 'נשלח ✓' })),
+          });
+          return cols;
+        })(),
+    returnPouches: staff ? state.returnPouches.map(decoratePouch) : undefined,
     myReturnPouches: state.returnPouches
       .filter((p) => isMyPouch(p) && p.status !== 'completed')
       .map(decoratePouch),
-    activeReturnPouches: state.returnPouches
-      .filter((p) => p.status !== 'completed')
-      .map(decoratePouch),
+    activeReturnPouches: staff
+      ? state.returnPouches.filter((p) => p.status !== 'completed').map(decoratePouch)
+      : undefined,
     lastPouch: (() => {
       if (!state.lastPouchId) return null;
       const p = state.returnPouches.find((x) => x.id === state.lastPouchId);
       return p ? decoratePouch(p) : null;
     })(),
     // Legacy unit list (units in transit not yet in a pouch)
-    returnUnits: state.units
-      .filter((u) => u.status === 'בדרך חזרה')
-      .map((u) => {
-        const p = product(u.modelId);
-        const pouch = state.returnPouches.find((x) => x.returnItems.includes(u.id));
-        return {
+    returnUnits: !staff
+      ? undefined
+      : state.units
+          .filter((u) => u.status === 'בדרך חזרה')
+          .map((u) => {
+            const p = product(u.modelId);
+            const pouch = state.returnPouches.find((x) => x.returnItems.includes(u.id));
+            return {
+              unitId: u.id,
+              name: p.name,
+              category: p.category,
+              qr: pouch?.qr || null,
+              pouchId: pouch?.id || null,
+            };
+          }),
+    cleaningUnits: !staff
+      ? undefined
+      : state.units.filter((u) => u.status === 'בניקוי').map((u) => ({
           unitId: u.id,
-          name: p.name,
-          category: p.category,
-          qr: pouch?.qr || null,
-          pouchId: pouch?.id || null,
-        };
-      }),
-    cleaningUnits: state.units
-      .filter((u) => u.status === 'בניקוי')
-      .map((u) => ({
-        unitId: u.id,
-        name: product(u.modelId).name,
-      })),
-    repairUnits: state.units
-      .filter((u) => u.status === 'בתיקון')
-      .map((u) => ({
-        unitId: u.id,
-        name: product(u.modelId).name,
-      })),
+          name: product(u.modelId).name,
+        })),
+    repairUnits: !staff
+      ? undefined
+      : state.units.filter((u) => u.status === 'בתיקון').map((u) => ({
+          unitId: u.id,
+          name: product(u.modelId).name,
+        })),
   };
 }
 
