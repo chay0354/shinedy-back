@@ -197,8 +197,28 @@ function cartPoints() {
   return state.cart.reduce((sum, id) => sum + product(id).points, 0);
 }
 
+/** Points locked in jewelry the customer still holds or is returning (not yet credited). */
+function pointsTiedUpInJewelry() {
+  let sum = 0;
+  const seen = new Set();
+  for (const uid of state.myItems) {
+    if (seen.has(uid)) continue;
+    const u = unit(uid);
+    if (!u) continue;
+    if (u.status === 'אצל לקוחה' || u.status === 'בדרך ללקוחה' || u.status === 'בדרך חזרה') {
+      seen.add(uid);
+      sum += product(u.modelId)?.points || 0;
+    }
+  }
+  return sum;
+}
+
 function remainingPoints() {
-  return state.pointsBalance - cartPoints();
+  const cart = cartPoints();
+  const tied = pointsTiedUpInJewelry();
+  const planCap = state.planId ? currentPlan().points : state.pointsBalance;
+  const available = Math.min(state.pointsBalance, planCap - tied);
+  return Math.max(0, available - cart);
 }
 
 function exchangeFreedPoints() {
@@ -276,6 +296,29 @@ function reconcileCustomerUnits() {
     const anyInTransit = (o.items || []).some((uid) => unit(uid)?.status === 'בדרך ללקוחה');
     if (anyInTransit && o.status === 'נשלח') {
       o.status = 'ליקוט';
+    }
+  }
+
+  // Active return pouches: keep units in transit and on the customer's inventory list.
+  for (const pouch of state.returnPouches) {
+    if (!isMyPouch(pouch) || pouch.inventoryCleared || pouch.status === 'completed') continue;
+    for (const uid of pouch.returnItems || []) {
+      const idx = state.units.findIndex((u) => u.id === uid);
+      if (idx < 0) continue;
+      const u = state.units[idx];
+      if (u.status !== 'בדרך חזרה' && u.status !== 'בניקוי' && u.status !== 'בתיקון') {
+        state.units[idx] = {
+          ...u,
+          status: 'בדרך חזרה',
+          ownerUserId: state.currentUserId,
+        };
+      }
+      if (!state.myItems.includes(uid)) {
+        state.myItems.push(uid);
+      }
+    }
+    if (!state.lastPouchId) {
+      state.lastPouchId = pouch.id;
     }
   }
 }
