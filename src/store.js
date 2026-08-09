@@ -233,27 +233,49 @@ function pruneMyItems() {
   state.myItems = state.myItems.filter((uid) => Boolean(unit(uid)));
 }
 
-/** Fix units still marked זמין while listed on the customer's account. */
+/** Align unit status with order lifecycle; fix legacy rows from the old skip-warehouse bug. */
 function reconcileCustomerUnits() {
   if (!state.currentUserId) return;
+
   for (const uid of state.myItems) {
     const idx = state.units.findIndex((u) => u.id === uid);
     if (idx < 0) continue;
     const u = state.units[idx];
-    if (u.status === 'זמין' || u.status === 'בדרך ללקוחה') {
+    const purchaseOrder = state.orders.find(
+      (o) =>
+        o.userId === state.currentUserId &&
+        o.type === 'הזמנה' &&
+        (o.items || []).includes(uid),
+    );
+    const delivered = purchaseOrder?.status === 'נשלח';
+    const inReturnFlow = u.status === 'בדרך חזרה' || u.status === 'בניקוי' || u.status === 'בתיקון';
+
+    if (inReturnFlow) {
+      if (!u.ownerUserId) {
+        state.units[idx] = { ...u, ownerUserId: state.currentUserId };
+      }
+      continue;
+    }
+
+    if (u.status === 'זמין' || (u.status === 'אצל לקוחה' && purchaseOrder && !delivered)) {
       state.units[idx] = {
         ...u,
-        status: 'אצל לקוחה',
+        status: delivered ? 'אצל לקוחה' : 'בדרך ללקוחה',
         ownerUserId: state.currentUserId,
       };
+      continue;
+    }
+
+    if (!u.ownerUserId) {
+      state.units[idx] = { ...u, ownerUserId: state.currentUserId };
     }
   }
-  if (!isDbEnabled) return;
+
   for (const o of state.orders) {
     if (o.userId !== state.currentUserId || o.type !== 'הזמנה') continue;
-    if (o.status === 'נשלח') continue;
-    if ((o.items || []).some((uid) => state.myItems.includes(uid))) {
-      o.status = 'נשלח';
+    const anyInTransit = (o.items || []).some((uid) => unit(uid)?.status === 'בדרך ללקוחה');
+    if (anyInTransit && o.status === 'נשלח') {
+      o.status = 'ליקוט';
     }
   }
 }
@@ -301,7 +323,7 @@ const CUSTOMER_ORDER_STATUS = {
 function customerUnitStatusLabel(status) {
   const labels = {
     'אצל לקוחה': 'הפריט אצלי',
-    'בדרך ללקוחה': 'בדרך אליי',
+    'בדרך ללקוחה': 'בדרך',
     'בדרך חזרה': 'בתהליך החזרה',
   };
   return labels[status] || status;
@@ -394,6 +416,7 @@ export function getSnapshot() {
       .map((uid) => {
         const u = unit(uid);
         if (!u) return null;
+        if (u.status !== 'אצל לקוחה') return null;
         const p = product(u.modelId);
         if (!p) return null;
         const st = STATUS_STYLE[u.status] || { bg: '#EEE', fg: '#555' };
@@ -653,13 +676,12 @@ function makeQrCode() {
 export function confirmOrder() {
   if (!state.cart.length) throw new Error('הסל ריק');
   const orderItems = [];
-  const unitStatus = isDbEnabled ? 'אצל לקוחה' : 'בדרך ללקוחה';
   for (const pid of state.cart) {
     const idx = state.units.findIndex((u) => u.modelId === pid && u.status === 'זמין');
     if (idx > -1) {
       state.units[idx] = {
         ...state.units[idx],
-        status: unitStatus,
+        status: 'בדרך ללקוחה',
         ownerUserId: state.currentUserId || null,
       };
       orderItems.push(state.units[idx].id);
@@ -675,7 +697,7 @@ export function confirmOrder() {
     userId: state.currentUserId || null,
     customerName: state.currentUserName || 'הלקוחה (דמו)',
     items: orderItems,
-    status: isDbEnabled ? 'נשלח' : 'ליקוט',
+    status: 'ליקוט',
     date: 'היום',
   };
   state.myItems = [...state.myItems, ...orderItems];
