@@ -115,15 +115,22 @@ async function persistAfterRequest(req, user, staff = false) {
   }
 }
 
+// The store is a module-level singleton, so hydrate -> act -> persist must run
+// to completion before the next request loads a different user over it.
+let requestQueue = Promise.resolve();
+
 export async function withRequest(req, fn, opts = {}) {
-  const user = await hydrateForRequest(req, opts);
-  try {
+  const run = requestQueue.then(async () => {
+    const user = await hydrateForRequest(req, opts);
     const result = fn();
     await persistAfterRequest(req, user, opts.staff);
     return result;
-  } catch (e) {
-    throw e;
-  }
+  });
+  requestQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 export async function deleteAllUsers() {

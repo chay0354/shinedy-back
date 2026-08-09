@@ -617,6 +617,18 @@ export function removeFromCart(productId) {
   return getSnapshot();
 }
 
+// Counters restart at the same value for every customer, so ids must be scoped
+// to the user or one customer's upsert overwrites another's order or pouch.
+function userIdSuffix() {
+  if (!state.currentUserId) return '';
+  return `-${state.currentUserId.replace(/-/g, '').slice(0, 6).toUpperCase()}`;
+}
+
+function makeQrCode() {
+  const random = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `QR-${random}${userIdSuffix()}`;
+}
+
 export function confirmOrder() {
   if (!state.cart.length) throw new Error('הסל ריק');
   const orderItems = [];
@@ -637,7 +649,7 @@ export function confirmOrder() {
     0,
   );
   const newOrder = {
-    id: `ORD-${state.orderCounter}`,
+    id: `ORD-${state.orderCounter}${userIdSuffix()}`,
     type: 'הזמנה',
     userId: state.currentUserId || null,
     customerName: state.currentUserName || 'הלקוחה (דמו)',
@@ -708,9 +720,9 @@ export function confirmExchange() {
   }
 
   const pendingPoints = pointsForUnits(returnItems);
-  const qr = `QR-${Math.floor(1000 + Math.random() * 9000)}`;
-  const orderId = `ORD-${state.orderCounter}`;
-  const pouchId = `POUCH-${state.pouchCounter}`;
+  const qr = makeQrCode();
+  const orderId = `ORD-${state.orderCounter}${userIdSuffix()}`;
+  const pouchId = `POUCH-${state.pouchCounter}${userIdSuffix()}`;
 
   state.orders.push({
     id: orderId,
