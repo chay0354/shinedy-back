@@ -53,11 +53,14 @@ export function getUserSupabase(token) {
   }
 }
 
-/** Publishable-key client for signInWithPassword — never use on getSupabase(). */
+// Sign-in must never run on the admin singleton: it stores the user JWT on the
+// client and every later write would then be evaluated against RLS.
 export function getAuthClient() {
-  if (!isDbEnabled || !url || !publishableKey) return null;
+  if (!isDbEnabled || !url) return null;
   if (authClient) return authClient;
-  authClient = createClient(url, publishableKey, supabaseClientOptions());
+  const key = publishableKey || adminKey;
+  if (!key) return null;
+  authClient = createClient(url, key, supabaseClientOptions());
   return authClient;
 }
 
@@ -88,6 +91,15 @@ export function getSupabase() {
   }
 
   return adminClient;
+}
+
+export function getConfigStatus() {
+  return {
+    url: Boolean(url?.startsWith('https://')),
+    adminKey: Boolean(adminKey),
+    publishableKey: Boolean(publishableKey),
+    authClient: Boolean(url && (publishableKey || adminKey)),
+  };
 }
 
 export async function pingDatabase() {

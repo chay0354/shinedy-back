@@ -4,7 +4,7 @@ import express from 'express';
 import * as store from './store.js';
 import * as session from './session.js';
 import * as db from './db.js';
-import { pingDatabase } from './supabase.js';
+import { pingDatabase, getConfigStatus } from './supabase.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -57,6 +57,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     mock: process.env.MOCK_MODE === 'true',
     database: session.isDbEnabled,
+    config: getConfigStatus(),
   });
 });
 
