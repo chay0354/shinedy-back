@@ -188,7 +188,10 @@ export async function registerUser({ email, password, fullName }) {
     console.error('ensureUserProfile after register:', profileErr?.message || profileErr);
   }
 
-  const { data: signIn, error: signInError } = await supabase.auth.signInWithPassword({
+  const { getAuthClient } = await import('./supabase.js');
+  const authClient = getAuthClient();
+  if (!authClient) throw new Error('Auth client not configured');
+  const { data: signIn, error: signInError } = await authClient.auth.signInWithPassword({
     email,
     password,
   });
@@ -201,9 +204,10 @@ export async function loginUser({ email, password }) {
   if (!isDbEnabled) {
     return { session: null, snapshot: store.login() };
   }
-  const { getSupabase } = await import('./supabase.js');
-  const supabase = getSupabase();
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const { getAuthClient } = await import('./supabase.js');
+  const authClient = getAuthClient();
+  if (!authClient) throw new Error('Auth client not configured');
+  const { data, error } = await authClient.auth.signInWithPassword({ email, password });
   if (error) throw error;
   await db.ensureAdminByEmail(data.user.id, email);
   return { user: data.user, session: data.session };

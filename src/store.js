@@ -552,6 +552,28 @@ export function subscribe(planId) {
   return getSnapshot();
 }
 
+export function cancelSubscription() {
+  if (!state.subscribed) throw new Error('אין מנוי פעיל');
+  if ((state.myItems || []).length > 0) {
+    throw new Error('יש להחזיר את כל התכשיטים לפני ביטול המנוי');
+  }
+  const activeReturn = state.returnPouches.find(
+    (p) => isMyPouch(p) && p.status !== 'completed',
+  );
+  if (activeReturn) {
+    throw new Error('יש החזרה פעילה — יש להשלים אותה לפני ביטול המנוי');
+  }
+
+  state.subscribed = false;
+  state.planId = null;
+  state.pointsBalance = 0;
+  state.cart = [];
+  state.exchangeReturns = [];
+  state.exchangeCart = [];
+  state.flash = 'המנוי בוטל — אפשר להצטרף שוב בכל עת';
+  return getSnapshot();
+}
+
 export function login() {
   if (!state.subscribed) {
     state.subscribed = true;

@@ -155,6 +155,8 @@ app.patch(
 
 app.post('/api/subscribe', wrap((req) => store.subscribe(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
+app.post('/api/subscribe/cancel', wrap(() => store.cancelSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+
 app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post('/api/cart/remove', wrap((req) => store.removeFromCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));

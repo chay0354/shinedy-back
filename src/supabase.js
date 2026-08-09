@@ -22,6 +22,7 @@ export const isDbEnabled = Boolean(
 );
 
 let adminClient = null;
+let authClient = null;
 
 function supabaseClientOptions() {
   return {
@@ -50,6 +51,14 @@ export function getUserSupabase(token) {
     console.error('createContextClient failed:', err.message);
     return null;
   }
+}
+
+/** Publishable-key client for signInWithPassword — never use on getSupabase(). */
+export function getAuthClient() {
+  if (!isDbEnabled || !url || !publishableKey) return null;
+  if (authClient) return authClient;
+  authClient = createClient(url, publishableKey, supabaseClientOptions());
+  return authClient;
 }
 
 export function getSupabase() {
