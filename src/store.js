@@ -258,14 +258,20 @@ function reconcileCustomerUnits() {
   }
 }
 
+// Stock levels are internal: customers see availability, never unit counts.
+function isStaffViewer() {
+  return state.currentUserRole === 'admin' || state.currentUserRole === 'warehouse';
+}
+
 function decorateProduct(p, budget, cartArr) {
   const avail = availableUnitsForProduct(p.id).length;
   const inCart = cartArr.includes(p.id);
   const disabled = !inCart && (avail === 0 || budget < p.points);
   return {
     ...p,
-    availCount: avail,
-    availLabel: avail > 0 ? `זמין (${avail})` : 'אין במלאי',
+    inStock: avail > 0,
+    availLabel: avail > 0 ? 'זמין' : 'אין במלאי',
+    ...(isStaffViewer() ? { availCount: avail } : {}),
     inCart,
     addDisabled: disabled,
     buttonLabel: inCart ? 'בסל ✓' : disabled ? 'לא ניתן' : 'הוסיפי לסל',
@@ -363,18 +369,24 @@ export function getSnapshot() {
       ...p,
       shippingLabel: p.shipping ? 'משלוח כלול' : 'משלוח בתשלום',
     })),
-    products: state.products.map((p) => ({
-      ...p,
-      availCount: availableUnitsForProduct(p.id).length,
-      availLabel:
-        availableUnitsForProduct(p.id).length > 0
-          ? `זמין (${availableUnitsForProduct(p.id).length})`
-          : 'אין במלאי',
-    })),
-    catalogProducts: state.products.map((p) => decorateProduct(p, remaining, state.cart)),
-    exchangeCatalog: state.products.map((p) =>
-      decorateProduct(p, exchangeAvail, state.exchangeCart),
-    ),
+    products: state.products
+      .map((p) => {
+        const avail = availableUnitsForProduct(p.id).length;
+        return {
+          ...p,
+          inStock: avail > 0,
+          availLabel: avail > 0 ? 'זמין' : 'אין במלאי',
+          ...(isStaffViewer() ? { availCount: avail } : {}),
+        };
+      })
+      // Staff manage stock, so they keep seeing sold-out models.
+      .filter((p) => isStaffViewer() || p.inStock),
+    catalogProducts: state.products
+      .map((p) => decorateProduct(p, remaining, state.cart))
+      .filter((p) => isStaffViewer() || p.inStock || p.inCart),
+    exchangeCatalog: state.products
+      .map((p) => decorateProduct(p, exchangeAvail, state.exchangeCart))
+      .filter((p) => isStaffViewer() || p.inStock || p.inCart),
     myItems: state.myItems
       .map((uid) => {
         const u = unit(uid);
