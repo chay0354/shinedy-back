@@ -82,9 +82,9 @@ function makeInitialState() {
     lastPouchId: null,
     // Manager fixtures only — not the interactive demo customer
     seedCustomers: [
-      { name: 'נועה כהן', plan: 'Signature', points: '520/800', status: 'פעיל' },
-      { name: 'תמר לוי', plan: 'Prestige', points: '1100/1400', status: 'פעיל' },
-      { name: 'שני אברהם', plan: 'Essentials', points: '0/400', status: 'מוקפא' },
+      { id: 'seed-0', name: 'נועה כהן', plan: 'Signature', points: '520/800', status: 'פעיל', phone: '050-1111111', email: 'noa@example.com' },
+      { id: 'seed-1', name: 'תמר לוי', plan: 'Prestige', points: '1100/1400', status: 'פעיל', phone: '052-2222222', email: 'tamar@example.com' },
+      { id: 'seed-2', name: 'שני אברהם', plan: 'Essentials', points: '0/400', status: 'מוקפא', phone: '054-3333333', email: 'shani@example.com' },
     ],
   };
 }
