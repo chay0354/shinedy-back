@@ -62,8 +62,8 @@ export async function loadCatalogIntoState(state) {
       getSupabase().from('plans').select('*'),
       getSupabase().from('products').select('*'),
       getSupabase().from('units').select('*'),
-      getSupabase().from('orders').select('*').is('user_id', null),
-      getSupabase().from('return_pouches').select('*').is('user_id', null),
+      getSupabase().from('orders').select('*'),
+      getSupabase().from('return_pouches').select('*'),
     ]);
 
   if (plansRes.error) throw plansRes.error;
@@ -186,6 +186,10 @@ export async function loadUserSession(userId, state) {
   state.planId = profile.plan_id;
   state.pointsBalance = profile.points_balance;
   state.credits = profile.credits;
+  state.creditsUsed = profile.credits_used ?? 0;
+  state.subscribedAt = profile.subscribed_at || (profile.subscribed ? profile.created_at : null);
+  state.address = profile.address || {};
+  state.payment = profile.payment || null;
   state.cart = profile.cart || [];
   state.exchangeReturns = profile.exchange_returns || [];
   state.exchangeCart = profile.exchange_cart || [];
@@ -253,6 +257,10 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     plan_id: state.planId,
     points_balance: state.pointsBalance,
     credits: state.credits,
+    credits_used: state.creditsUsed || 0,
+    subscribed_at: state.subscribedAt,
+    address: state.address || {},
+    payment: state.payment || null,
     cart: state.cart,
     exchange_returns: state.exchangeReturns,
     exchange_cart: state.exchangeCart,
@@ -276,7 +284,18 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     .from('profiles')
     .update(profileUpdate)
     .eq('id', userId);
-  if (profileError) throw profileError;
+  if (profileError) {
+    const fallback = { ...profileUpdate };
+    delete fallback.credits_used;
+    delete fallback.subscribed_at;
+    delete fallback.address;
+    delete fallback.payment;
+    const { error: fallbackError } = await client
+      .from('profiles')
+      .update(fallback)
+      .eq('id', userId);
+    if (fallbackError) throw fallbackError;
+  }
 
   await persistUserUnits(userId, state);
 
@@ -387,7 +406,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   for (const o of seedOrders) {
     const { error } = await getSupabase().from('orders').upsert({
       id: o.id,
-      user_id: null,
+      user_id: o.userId || null,
       type: o.type,
       customer_name: o.customerName,
       items: o.items,
@@ -404,7 +423,7 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   for (const p of seedPouches) {
     const { error } = await getSupabase().from('return_pouches').upsert({
       id: p.id,
-      user_id: null,
+      user_id: p.userId || null,
       qr: p.qr,
       order_id: p.orderId,
       customer_name: p.customerName,

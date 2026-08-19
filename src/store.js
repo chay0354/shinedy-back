@@ -1,7 +1,9 @@
 import { isDbEnabled } from './supabase.js';
 
-const STATUSES = ['זמין', 'שמור', 'אצל לקוחה', 'בניקוי', 'בתיקון', 'בדרך ללקוחה', 'בדרך חזרה'];
+const STATUSES = ['זמין', 'שמור', 'אצל לקוחה', 'בניקוי', 'בתיקון', 'בדרך ללקוחה', 'בדרך חזרה', 'נמכר'];
 const STAGES = ['ליקוט', 'בקרה', 'אריזה', 'נשלח'];
+const CREDIT_PCT = 10;
+const DAY_MS = 86400000;
 
 const STATUS_STYLE = {
   זמין: { bg: '#EDF3EA', fg: '#3E5C3F' },
@@ -11,6 +13,7 @@ const STATUS_STYLE = {
   בתיקון: { bg: '#F7E9E4', fg: '#8C4A34' },
   'בדרך ללקוחה': { bg: '#FBF6EC', fg: '#A9812F' },
   'בדרך חזרה': { bg: '#F3EAF0', fg: '#7A4A68' },
+  נמכר: { bg: '#EDE8E1', fg: '#5C5348' },
 };
 
 function makeInitialState() {
@@ -29,7 +32,13 @@ function makeInitialState() {
     subscribed: false,
     planId: null,
     pointsBalance: 0,
-    credits: 180,
+    credits: 0,
+    creditsUsed: 0,
+    subscribedAt: null,
+    address: {},
+    payment: null,
+    purchases: [],
+    purchaseCounter: 0,
     cart: [],
     exchangeReturns: [],
     exchangeCart: [],
@@ -46,7 +55,7 @@ function makeInitialState() {
       { id: 'R34', name: 'טבעת נועה', category: 'טבעות', metal: 'כסף', stone: 'אבן ירח', points: 150, price: 780 },
       { id: 'N14', name: 'שרשרת ליה', category: 'שרשראות', metal: 'זהב רוזה', stone: 'פנינה', points: 300, price: 1600 },
       { id: 'N08', name: 'שרשרת תמר', category: 'שרשראות', metal: 'כסף', stone: 'ללא אבן', points: 180, price: 950 },
-      { id: 'E08', name: 'עגילי מאיה', category: 'עגילים', metal: 'זהב צהוב', stone: 'יהלום', points: 260, price: 1450 },
+      { id: 'E08', name: 'עגילי מאיה', category: 'עגילים', metal: 'זהב צהוב', stone: 'יהלום מעבדה', points: 260, price: 1450 },
       { id: 'E19', name: 'עגילי רון', category: 'עגילים', metal: 'כסף', stone: 'אבן חן כחולה', points: 140, price: 690 },
       { id: 'B33', name: 'צמיד שני', category: 'צמידים', metal: 'זהב רוזה', stone: 'זירקון', points: 200, price: 1100 },
       { id: 'B12', name: 'צמיד עדן', category: 'צמידים', metal: 'כסף', stone: 'ללא אבן', points: 130, price: 620 },
@@ -143,15 +152,14 @@ export function getMutableState() {
 }
 
 export function mergeOrders(orders) {
-  const seed = orders.filter((o) => !o.userId);
-  const user = orders.filter((o) => o.userId);
-  state.orders = [...seed, ...user];
+  const unique = [...new Map(orders.map((o) => [o.id, o])).values()];
+  state.orders = unique;
+  rebuildPurchasesFromOrders();
 }
 
 export function mergePouches(pouches) {
-  const seed = pouches.filter((p) => !p.userId);
-  const user = pouches.filter((p) => p.userId);
-  state.returnPouches = [...seed, ...user];
+  const unique = [...new Map(pouches.map((p) => [p.id, p])).values()];
+  state.returnPouches = unique;
 }
 
 export function clearUserSession() {
@@ -168,6 +176,10 @@ export function clearUserSession() {
   state.flash = null;
   state.lastPouchId = null;
   state.registration = null;
+  state.creditsUsed = 0;
+  state.subscribedAt = null;
+  state.address = {};
+  state.payment = null;
   state.units = state.units.filter((u) => !u.demoOnly && !u.ownerUserId);
 }
 
@@ -205,6 +217,7 @@ function pointsTiedUpInJewelry() {
     if (seen.has(uid)) continue;
     const u = unit(uid);
     if (!u) continue;
+    if (state.exchangeReturns.includes(uid)) continue;
     if (u.status === 'אצל לקוחה' || u.status === 'בדרך ללקוחה' || u.status === 'בדרך חזרה') {
       seen.add(uid);
       sum += product(u.modelId)?.points || 0;
@@ -216,9 +229,8 @@ function pointsTiedUpInJewelry() {
 function remainingPoints() {
   const cart = cartPoints();
   const tied = pointsTiedUpInJewelry();
-  const planCap = state.planId ? currentPlan().points : state.pointsBalance;
-  const available = Math.min(state.pointsBalance, planCap - tied);
-  return Math.max(0, available - cart);
+  const planCap = state.planId ? currentPlan().points : 0;
+  return planCap - tied - cart;
 }
 
 function exchangeFreedPoints() {
@@ -372,6 +384,64 @@ function customerUnitStatusLabel(status) {
   return labels[status] || status;
 }
 
+function trackingFor(o) {
+  if (!['נשלח', 'נשלחה', 'נמסרה'].includes(o.status)) return null;
+  return o.tracking || `SHN-TRK-${String(o.id).replace(/\W/g, '').slice(-8).toUpperCase()}`;
+}
+
+function creditMonthsOf(fromIso) {
+  if (!fromIso) return 0;
+  const from = new Date(fromIso).getTime();
+  const to = Date.now();
+  if (!Number.isFinite(from) || to <= from) return 0;
+  return Math.floor((to - from) / (DAY_MS * 30));
+}
+
+function computedCreditBalance() {
+  const plan = currentPlan();
+  const months = creditMonthsOf(state.subscribedAt);
+  const earned = months * (plan.price || 0) * (CREDIT_PCT / 100);
+  if (state.subscribedAt) {
+    return Math.max(0, earned - (state.creditsUsed || 0));
+  }
+  return Math.max(0, Number(state.credits) || 0);
+}
+
+function purchaseMetaFromOrder(o) {
+  const meta = (o.newItems || []).find((x) => x && x.kind === 'purchase-meta') || {};
+  const serial = Array.isArray(o.items) ? o.items[0] : o.items;
+  return {
+    id: o.id,
+    userId: o.userId || null,
+    buyer: meta.buyer || null,
+    recipient: o.customerName,
+    pid: meta.pid,
+    serial,
+    name: meta.name,
+    sku: meta.sku,
+    date: o.date,
+    price: Number(meta.price) || 0,
+    creditUsed: Number(meta.creditUsed) || 0,
+    paid: Number(meta.paid) || 0,
+    address: meta.address || {},
+    payment: meta.payment || null,
+    needsShipping: Boolean(meta.needsShipping) && !meta.shippedAt,
+    shippedAt: meta.shippedAt || null,
+  };
+}
+
+function rebuildPurchasesFromOrders() {
+  state.purchases = state.orders.filter((o) => o.type === 'רכישה').map(purchaseMetaFromOrder);
+}
+
+function isSuspended() {
+  return Boolean(state.registration?.suspended || state.registration?.suspendedAt);
+}
+
+function hasOpenReturn() {
+  return state.returnPouches.some((p) => isMyPouch(p) && p.status !== 'completed');
+}
+
 function decorateCustomerOrder(o) {
   const base = decorateOrder(o);
   const isPurchase = o.type === 'הזמנה';
@@ -396,6 +466,8 @@ function decorateCustomerOrder(o) {
     isActive,
     itemsDetail,
     inTransitItems: itemsDetail.filter((i) => i.status === 'בדרך ללקוחה'),
+    tracking: trackingFor(o),
+    trackingStatus: o.status === 'נמסרה' ? 'נמסר ללקוחה' : o.status === 'נשלח' ? 'נאסף מהמחסן' : null,
   };
 }
 
@@ -424,9 +496,19 @@ export function getSnapshot() {
     pointsBalance: state.pointsBalance,
     pointsTotal,
     pointsPct: pointsTotal ? Math.round((state.pointsBalance / pointsTotal) * 100) : 0,
-    credits: state.credits,
+    credits: computedCreditBalance(),
+    creditMonths: creditMonthsOf(state.subscribedAt),
+    creditPct: CREDIT_PCT,
     flash: state.flash,
-    registration: state.registration,
+    registration: state.registration
+      ? {
+          ...state.registration,
+          name: state.registration.name || state.registration.fullName || state.currentUserName,
+          address: state.address || state.registration.address || {},
+          payment: state.payment || state.registration.payment || null,
+          subscribedAt: state.subscribedAt,
+        }
+      : null,
     auth: state.currentUserId
       ? { userId: state.currentUserId, role: state.currentUserRole }
       : null,
@@ -446,12 +528,9 @@ export function getSnapshot() {
           availLabel: avail > 0 ? 'זמין' : 'אין במלאי',
           ...(isStaffViewer() ? { availCount: avail } : {}),
         };
-      })
-      // Staff manage stock, so they keep seeing sold-out models.
-      .filter((p) => isStaffViewer() || p.inStock),
+      }),
     catalogProducts: state.products
-      .map((p) => decorateProduct(p, remaining, state.cart))
-      .filter((p) => isStaffViewer() || p.inStock || p.inCart),
+      .map((p) => decorateProduct(p, remaining, state.cart)),
     exchangeCatalog: state.products
       .map((p) => decorateProduct(p, exchangeAvail, state.exchangeCart))
       .filter((p) => isStaffViewer() || p.inStock || p.inCart),
@@ -467,6 +546,12 @@ export function getSnapshot() {
           unitId: u.id,
           name: p.name,
           category: p.category,
+          metal: p.metal,
+          stone: p.stone,
+          points: p.points,
+          price: p.price,
+          productId: p.id,
+          sku: p.id,
           status: u.status,
           badgeBg: st.bg,
           badgeFg: st.fg,
@@ -498,6 +583,27 @@ export function getSnapshot() {
       .filter(isMyOrder)
       .map(decorateCustomerOrder)
       .filter((o) => o.isActive),
+    myPurchases: (state.purchases || []).filter((p) =>
+      state.currentUserId ? p.userId === state.currentUserId : !p.userId,
+    ),
+    purchases: staff ? state.purchases || [] : undefined,
+    pastRentals: state.orders
+      .filter(isMyOrder)
+      .flatMap((o) =>
+        (o.returnItems || []).map((uid) => {
+          const u = unit(uid);
+          const p = u ? product(u.modelId) : product(String(uid).split('-')[0]);
+          if (!p) return null;
+          return {
+            serial: uid,
+            product: p,
+            orderId: o.id,
+            date: o.date,
+            returnedAt: o.date,
+          };
+        }),
+      )
+      .filter(Boolean),
     // Manager customers table: seed fixtures only (demo user stays in /account)
     customers: staff ? state.seedCustomers : undefined,
     inventory: staff
@@ -629,13 +735,40 @@ function seedDemoOwnedJewelry() {
 export function subscribe(planId) {
   const plan = state.plans.find((p) => p.id === planId);
   if (!plan) throw new Error('Plan not found');
+  if (state.subscribed && state.planId) {
+    return changePlan(planId);
+  }
   state.subscribed = true;
   state.planId = planId;
   state.pointsBalance = plan.points;
-  state.myItems = [];
+  state.subscribedAt = state.subscribedAt || new Date().toISOString();
   if (state.registration) state.registration.step = 7;
-  seedDemoOwnedJewelry();
+  if (!isDbEnabled && (!state.myItems || state.myItems.length === 0)) {
+    seedDemoOwnedJewelry();
+    state.credits = 180;
+  }
   state.flash = null;
+  return getSnapshot();
+}
+
+export function changePlan(planId) {
+  const plan = state.plans.find((p) => p.id === planId);
+  if (!plan) throw new Error('המסלול לא נמצא');
+  if (!state.subscribed || !state.planId) {
+    return subscribe(planId);
+  }
+  if (state.planId === planId) throw new Error('זה כבר המסלול שלך');
+  const held = pointsTiedUpInJewelry();
+  const inBox = cartPoints();
+  if (held + inBox > plan.points) {
+    throw new Error(
+      `במסלול ${plan.name} המכסה היא ${plan.points} נק׳, ואצלך כרגע ${held + inBox} נק׳. כדי לעבור אליו צריך קודם להחזיר תכשיט.`,
+    );
+  }
+  const prev = currentPlan();
+  state.planId = planId;
+  state.pointsBalance = Math.max(0, plan.points - held);
+  state.flash = `המסלול שלך עודכן מ-${prev.name} ל-${plan.name} ✓`;
   return getSnapshot();
 }
 
@@ -668,6 +801,8 @@ export function login() {
     state.pointsBalance = 800;
     state.myItems = [];
     seedDemoOwnedJewelry();
+    state.credits = 180;
+    state.subscribedAt = state.subscribedAt || new Date(Date.now() - 90 * DAY_MS).toISOString();
   } else if (state.myItems.length === 0) {
     seedDemoOwnedJewelry();
   }
@@ -675,9 +810,9 @@ export function login() {
   return getSnapshot();
 }
 
-export function registerMock({ fullName, email }) {
+export function registerMock({ fullName, email, phone }) {
   state.currentUserName = fullName;
-  state.registration = { fullName, email, step: 7 };
+  state.registration = { fullName, email, phone, step: 7, name: fullName };
   return login();
 }
 
@@ -690,6 +825,7 @@ export function logout() {
 }
 
 export function addToCart(productId) {
+  if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
   if (state.cart.includes(productId)) return getSnapshot();
   const p = product(productId);
   if (!p) throw new Error('Product not found');
@@ -717,7 +853,10 @@ function makeQrCode() {
 }
 
 export function confirmOrder() {
+  if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
+  if (hasOpenReturn()) throw new Error('לא ניתן לבצע כרגע החלפה חדשה — ההחזרה מההחלפה הקודמת עדיין לא הושלמה');
   if (!state.cart.length) throw new Error('הסל ריק');
+  if (remainingPoints() < 0) throw new Error('חריגה ממכסת הנקודות');
   const orderItems = [];
   for (const pid of state.cart) {
     const idx = state.units.findIndex((u) => u.modelId === pid && u.status === 'זמין');
@@ -749,6 +888,118 @@ export function confirmOrder() {
   state.orders.push(newOrder);
   state.orderCounter += 1;
   state.flash = 'ההזמנה בדרך ✓';
+  return getSnapshot();
+}
+
+export function purchaseItem(payload = {}) {
+  const pid = payload.productId || payload.pid;
+  const serial = payload.serial || null;
+  const p = product(pid);
+  if (!p) throw new Error('לא נמצא');
+  const guest = !state.currentUserId;
+  const buyer = payload.buyer || null;
+  if (guest && !(buyer && buyer.name)) {
+    throw new Error('צריך להתחבר או למלא פרטים');
+  }
+
+  let target = serial ? unit(serial) : null;
+  if (serial && state.currentUserId && !state.myItems.includes(serial)) {
+    throw new Error('הפריט לא שייך לחשבון');
+  }
+  if (!target) target = availableUnitsForProduct(pid)[0] || null;
+  if (!target) throw new Error('אין יחידה זמינה לרכישה');
+
+  const price = Number(p.price) || 0;
+  const balance = computedCreditBalance();
+  const maxCredit = guest ? 0 : Math.min(balance, price);
+  const wanted =
+    payload.creditToUse === undefined || payload.creditToUse === null
+      ? maxCredit
+      : Number(payload.creditToUse);
+  const creditUsed = guest
+    ? 0
+    : Math.min(maxCredit, Math.max(0, Number.isFinite(wanted) ? wanted : maxCredit));
+  const toPay = Math.max(0, price - creditUsed);
+
+  const address = { ...(state.address || {}), ...(payload.address || {}) };
+  if (!guest && payload.saveAddress && payload.address) {
+    state.address = { ...address };
+  }
+  const payment = payload.payment
+    ? {
+        holder: payload.payment.holder || '',
+        last4: payload.payment.last4 || '',
+        expiry: payload.payment.expiry || '',
+      }
+    : state.payment;
+  if (!guest && payload.savePayment && payload.payment) {
+    state.payment = { ...payment };
+  }
+  if (!guest) {
+    state.creditsUsed = (state.creditsUsed || 0) + creditUsed;
+    if (state.subscribedAt) {
+      state.credits = computedCreditBalance();
+    } else {
+      state.credits = Math.max(0, (Number(state.credits) || 0) - creditUsed);
+    }
+  }
+
+  const idx = state.units.findIndex((x) => x.id === target.id);
+  if (idx > -1) {
+    state.units[idx] = {
+      ...state.units[idx],
+      status: 'נמכר',
+      ownerUserId: state.currentUserId || state.units[idx].ownerUserId || null,
+    };
+  }
+  state.myItems = state.myItems.filter((id) => id !== target.id);
+  state.exchangeReturns = state.exchangeReturns.filter((id) => id !== target.id);
+
+  const needsShipping = !serial;
+  state.purchaseCounter = (state.purchaseCounter || 0) + 1;
+  const id = `PUR-${new Date().getFullYear()}-${String(state.purchaseCounter).padStart(4, '0')}${userIdSuffix()}`;
+  const meta = {
+    kind: 'purchase-meta',
+    pid: p.id,
+    name: p.name,
+    sku: p.id,
+    price,
+    creditUsed,
+    paid: toPay,
+    address,
+    payment,
+    buyer,
+    needsShipping,
+    shippedAt: null,
+  };
+  state.orders.unshift({
+    id,
+    type: 'רכישה',
+    userId: state.currentUserId || null,
+    customerName:
+      payload.recipient || (buyer && buyer.name) || state.currentUserName || 'אורחת',
+    items: [target.id],
+    returnItems: [],
+    newItems: [meta],
+    status: needsShipping ? 'ליקוט' : 'נמסרה',
+    date: new Date().toISOString(),
+  });
+  rebuildPurchasesFromOrders();
+  const msg =
+    creditUsed > 0
+      ? `הרכישה הושלמה! מומשו ₪${Math.round(creditUsed)} קרדיט · לתשלום ₪${Math.round(toPay)}`
+      : `הרכישה הושלמה! לתשלום ₪${Math.round(toPay)} — ${p.name} בדרך אלייך`;
+  state.flash = msg;
+  return { ...getSnapshot(), purchase: { ok: true, msg, creditUsed, toPay } };
+}
+
+export function markPurchaseShipped(purchaseId) {
+  const order = state.orders.find((o) => o.id === purchaseId);
+  if (!order || order.type !== 'רכישה') throw new Error('רכישה לא נמצאה');
+  const meta = (order.newItems || []).find((x) => x && x.kind === 'purchase-meta');
+  if (meta) meta.shippedAt = new Date().toISOString();
+  order.status = 'נשלח';
+  rebuildPurchasesFromOrders();
   return getSnapshot();
 }
 
@@ -796,6 +1047,8 @@ function pointsForUnits(unitIds) {
  * - points are NOT credited yet — only after warehouse scans + confirms
  */
 export function confirmExchange() {
+  if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן לבצע החלפה');
+  if (hasOpenReturn()) throw new Error('לא ניתן לבצע כרגע החלפה חדשה — ההחזרה מההחלפה הקודמת עדיין לא הושלמה');
   if (!state.exchangeReturns.length) {
     throw new Error('יש לבחור לפחות פריט אחד להחזרה');
   }
@@ -966,9 +1219,15 @@ export function advanceOrder(orderId) {
     o.id === orderId ? { ...o, status: next } : o,
   );
   if (next === 'נשלח') {
+    state.orders = state.orders.map((o) =>
+      o.id === orderId
+        ? { ...o, status: next, tracking: trackingFor({ ...o, status: next }) }
+        : o,
+    );
     state.units = state.units.map((u) =>
       order.items.includes(u.id) ? { ...u, status: 'אצל לקוחה' } : u,
     );
+    return getSnapshot();
   }
   return getSnapshot();
 }

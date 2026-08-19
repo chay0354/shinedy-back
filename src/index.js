@@ -72,7 +72,7 @@ app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, fullName } = req.body || {};
+    const { email, password, fullName, phone } = req.body || {};
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
@@ -81,6 +81,7 @@ app.post('/api/auth/register', async (req, res) => {
         email,
         password,
         fullName: fullName.trim(),
+        phone: (phone || '').trim(),
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
@@ -96,7 +97,7 @@ app.post('/api/auth/register', async (req, res) => {
     return;
     }
     const snapshot = await session.withRequest(req, () =>
-      store.registerMock({ fullName: fullName.trim(), email: email.trim() }),
+      store.registerMock({ fullName: fullName.trim(), email: email.trim(), phone: (phone || '').trim() }),
     );
     res.json(snapshot);
   } catch (e) {
@@ -155,6 +156,15 @@ app.patch(
 );
 
 app.post('/api/subscribe', wrap((req) => store.subscribe(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+
+app.post('/api/subscribe/change', wrap((req) => store.changePlan(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+
+app.post('/api/purchase', wrap((req) => store.purchaseItem(req.body || {}), { auth: false }));
+
+app.post(
+  '/api/purchases/:id/shipped',
+  wrap((req) => store.markPurchaseShipped(req.params.id), { staff: true, staffRoles: ['admin', 'warehouse'] }),
+);
 
 app.post('/api/subscribe/cancel', wrap(() => store.cancelSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 

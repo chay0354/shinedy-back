@@ -82,10 +82,8 @@ async function persistAfterRequest(req, user, staff = false) {
 
   if (staff) {
     const st = store.getMutableState();
-    const currentSeedOrders = st.orders.filter((o) => !o.userId);
-    const currentSeedPouches = st.returnPouches.filter((p) => !p.userId);
-    seedOrders = currentSeedOrders;
-    seedPouches = currentSeedPouches;
+    seedOrders = st.orders;
+    seedPouches = st.returnPouches;
     await db.persistGlobalCatalog(st, seedOrders, seedPouches);
     return;
   }
@@ -112,6 +110,16 @@ async function persistAfterRequest(req, user, staff = false) {
       );
     }
     await db.persistUserSession(user.id, st, userOrders, userPouches, token);
+    return;
+  }
+
+  const st = store.getMutableState();
+  const guestPurchases = st.orders.filter((o) => o.type === 'רכישה' && !o.userId);
+  if (guestPurchases.length) {
+    const byId = new Map(seedOrders.map((o) => [o.id, o]));
+    for (const o of guestPurchases) byId.set(o.id, o);
+    seedOrders = [...byId.values()];
+    await db.persistGlobalCatalog(st, guestPurchases, []);
   }
 }
 
@@ -162,7 +170,7 @@ export async function deleteAllUsers() {
   return { deleted };
 }
 
-export async function registerUser({ email, password, fullName }) {
+export async function registerUser({ email, password, fullName, phone }) {
   if (!isDbEnabled) {
     throw new Error('Database mode required for registration');
   }
@@ -172,7 +180,7 @@ export async function registerUser({ email, password, fullName }) {
     email,
     password,
     email_confirm: true,
-    user_metadata: { full_name: fullName },
+    user_metadata: { full_name: fullName, phone: phone || '' },
   });
   if (error) {
     const msg = error.message || '';
@@ -188,6 +196,8 @@ export async function registerUser({ email, password, fullName }) {
     await db.ensureUserProfile(data.user.id, {
       full_name: fullName,
       email,
+      phone: phone || '',
+      credits: 0,
       registration_step: 7,
     });
   } catch (profileErr) {
