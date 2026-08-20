@@ -15,11 +15,15 @@ const corsOrigins = CORS_ORIGIN.split(',').map((o) => o.trim());
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || corsOrigins.includes(origin)) {
+      const local =
+        !origin ||
+        corsOrigins.includes(origin) ||
+        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+      if (local) {
         callback(null, true);
         return;
       }
-      callback(new Error('Not allowed by CORS'));
+      callback(null, false);
     },
   }),
 );
@@ -89,25 +93,39 @@ app.post('/api/auth/register', async (req, res) => {
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
-      await session.withRequest(req, () => store.getSnapshot());
+      const snapshot = await session.withRequest(req, () => {
+        if (req.body?.planId) store.subscribe(req.body.planId);
+        if (req.body?.payment) {
+          const st = store.getMutableState();
+          st.payment = {
+            holder: String(req.body.payment.holder || '').trim(),
+            last4: String(req.body.payment.last4 || '').replace(/\D/g, '').slice(-4),
+            expiry: String(req.body.payment.expiry || '').trim(),
+          };
+          if (st.registration) st.registration.paymentMethodAdded = true;
+        }
+        return store.getSnapshot();
+      });
       res.json({
         session: {
           access_token: authSession.access_token,
           refresh_token: authSession.refresh_token,
           expires_at: authSession.expires_at,
         },
-      ...store.getSnapshot(),
-    });
-    return;
+        ...snapshot,
+      });
+      return;
     }
-    const snapshot = await session.withRequest(req, () =>
-      store.registerMock({
+    const snapshot = await session.withRequest(req, () => {
+      const snap = store.registerMock({
         fullName: fullName.trim(),
         email: email.trim(),
         phone: (phone || '').trim(),
         ...legal,
-      }),
-    );
+      });
+      if (req.body?.planId) store.subscribe(req.body.planId);
+      return store.getSnapshot() || snap;
+    });
     res.json(snapshot);
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message || 'שגיאה בהרשמה' });
@@ -165,6 +183,14 @@ app.patch(
       fullName: st.registration?.fullName,
       email: st.registration?.email,
     };
+    if (patch.payment) {
+      st.payment = {
+        holder: String(patch.payment.holder || '').trim(),
+        last4: String(patch.payment.last4 || '').replace(/\D/g, '').slice(-4),
+        expiry: String(patch.payment.expiry || '').trim(),
+      };
+      st.registration.paymentMethodAdded = true;
+    }
     return store.getSnapshot();
   }, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );

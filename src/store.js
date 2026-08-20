@@ -16,6 +16,24 @@ const STATUS_STYLE = {
   נמכר: { bg: '#EDE8E1', fg: '#5C5348' },
 };
 
+const PLAN_ALIASES = {
+  silver: 'essentials',
+  combined: 'signature',
+  gold: 'prestige',
+  essentials: 'silver',
+  signature: 'combined',
+  prestige: 'gold',
+};
+
+function resolvePlan(planId) {
+  if (!planId) return null;
+  return (
+    state.plans.find((p) => p.id === planId) ||
+    state.plans.find((p) => p.id === PLAN_ALIASES[planId]) ||
+    null
+  );
+}
+
 function makeInitialState() {
   const unitMap = {
     'R21-1': 'זמין', 'R21-2': 'אצל לקוחה', 'R21-3': 'בניקוי',
@@ -46,6 +64,9 @@ function makeInitialState() {
     flash: null,
     orderCounter: 1043,
     plans: [
+      { id: 'silver', name: 'מסלול כסף', price: 199, points: 100, maxItems: 2, exchanges: 99, shipping: true, tagline: 'כסף וכסף מצופה זהב · אבני מויסנייט' },
+      { id: 'combined', name: 'מסלול משולב', price: 299, points: 170, maxItems: 4, exchanges: 99, shipping: true, tagline: 'כסף וזהב · יהלומי מעבדה קטנים' },
+      { id: 'gold', name: 'מסלול זהב', price: 499, points: 280, maxItems: 6, exchanges: 99, shipping: true, tagline: 'זהב · יהלומי מעבדה גדולים' },
       { id: 'essentials', name: 'Essentials', price: 249, points: 400, maxItems: 2, exchanges: 1, shipping: false, tagline: 'להתחיל להתנסות' },
       { id: 'signature', name: 'Signature', price: 449, points: 800, maxItems: 4, exchanges: 2, shipping: true, tagline: 'הבחירה הפופולרית' },
       { id: 'prestige', name: 'Prestige', price: 749, points: 1400, maxItems: 6, exchanges: 4, shipping: true, tagline: 'לגרדרובה עשירה' },
@@ -742,13 +763,13 @@ function seedDemoOwnedJewelry() {
 }
 
 export function subscribe(planId) {
-  const plan = state.plans.find((p) => p.id === planId);
-  if (!plan) throw new Error('Plan not found');
+  const plan = resolvePlan(planId);
+  if (!plan) throw new Error('המסלול לא נמצא');
   if (state.subscribed && state.planId) {
-    return changePlan(planId);
+    return changePlan(plan.id);
   }
   state.subscribed = true;
-  state.planId = planId;
+  state.planId = plan.id;
   state.pointsBalance = plan.points;
   state.subscribedAt = state.subscribedAt || new Date().toISOString();
   if (state.registration) state.registration.step = 7;
@@ -761,12 +782,12 @@ export function subscribe(planId) {
 }
 
 export function changePlan(planId) {
-  const plan = state.plans.find((p) => p.id === planId);
+  const plan = resolvePlan(planId);
   if (!plan) throw new Error('המסלול לא נמצא');
   if (!state.subscribed || !state.planId) {
     return subscribe(planId);
   }
-  if (state.planId === planId) throw new Error('זה כבר המסלול שלך');
+  if (state.planId === plan.id) return getSnapshot();
   const held = pointsTiedUpInJewelry();
   const inBox = cartPoints();
   if (held + inBox > plan.points) {
@@ -833,6 +854,10 @@ export function registerMock({
   signupIp,
 }) {
   state.currentUserName = fullName;
+  state.subscribed = false;
+  state.planId = null;
+  state.pointsBalance = 0;
+  state.myItems = [];
   state.registration = {
     fullName,
     email,
@@ -848,7 +873,7 @@ export function registerMock({
     noticesAcceptedAt: noticesAcceptedAt || null,
     signupIp: signupIp || '',
   };
-  return login();
+  return getSnapshot();
 }
 
 export function logout() {
