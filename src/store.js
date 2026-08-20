@@ -1123,6 +1123,7 @@ export function confirmExchange() {
   const orderId = `ORD-${state.orderCounter}${userIdSuffix()}`;
   const pouchId = `POUCH-${state.pouchCounter}${userIdSuffix()}`;
 
+  const createdAt = new Date().toISOString();
   state.orders.push({
     id: orderId,
     type: 'החזרה',
@@ -1131,7 +1132,7 @@ export function confirmExchange() {
     items: [],
     returnItems,
     status: 'בדרך חזרה',
-    date: 'היום',
+    date: createdAt,
     qr,
     pouchId,
   });
@@ -1146,7 +1147,8 @@ export function confirmExchange() {
     newItems: [],
     status: 'in_transit',
     scanned: false,
-    createdAt: 'היום',
+    createdAt,
+    courierConfirmedAt: createdAt,
     demoCustomer: true,
     pendingPoints,
     pointsCredited: false,
@@ -1254,11 +1256,44 @@ export function updatePlan(id, field, value) {
   return getSnapshot();
 }
 
+export function createProduct(input = {}) {
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('חסר שם תכשיט');
+  const category = String(input.category || 'טבעות').trim();
+  const prefix = { טבעות: 'R', עגילים: 'E', שרשראות: 'N', צמידים: 'B' }[category] || 'J';
+  let id = String(input.id || input.sku || '')
+    .trim()
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase();
+  if (!id) id = `${prefix}${Date.now().toString(36).toUpperCase()}`;
+  if (product(id) || state.units.some((u) => u.id === `${id}-1` || u.id === id)) {
+    throw new Error('מק״ט כבר קיים');
+  }
+  state.products.push({
+    id,
+    name,
+    category,
+    metal: input.metal || 'כסף 925',
+    stone: input.stone || 'מויסנייט',
+    points: Number(input.points) || 30,
+    price: Number(input.price) || 0,
+  });
+  state.units.push({
+    id: `${id}-1`,
+    modelId: id,
+    status: 'זמין',
+    demoOnly: false,
+  });
+  return getSnapshot();
+}
+
 export function updateProduct(id, field, value) {
-  const allowed = ['points', 'price'];
-  if (!allowed.includes(field)) throw new Error('Invalid field');
+  const numeric = ['points', 'price'];
+  const text = ['name', 'category', 'metal', 'stone'];
+  if (![...numeric, ...text].includes(field)) throw new Error('Invalid field');
+  if (!product(id)) throw new Error('Product not found');
   state.products = state.products.map((p) =>
-    p.id === id ? { ...p, [field]: Number(value) || 0 } : p,
+    p.id === id ? { ...p, [field]: numeric.includes(field) ? Number(value) || 0 : String(value ?? '') } : p,
   );
   return getSnapshot();
 }
@@ -1267,6 +1302,21 @@ export function setUnitStatus(unitId, status) {
   if (!STATUSES.includes(status)) throw new Error('Invalid status');
   state.units = state.units.map((u) => (u.id === unitId ? { ...u, status } : u));
   return getSnapshot();
+}
+
+function stampCourierHandover(order, at = new Date().toISOString()) {
+  order.courierConfirmedAt = at;
+  state.orders = state.orders.map((o) =>
+    o.id === order.id ? { ...o, courierConfirmedAt: at } : o,
+  );
+  state.returnPouches = state.returnPouches.map((pouch) => {
+    if (pouch.status === 'completed' || pouch.scanned) return pouch;
+    const sameOrder = pouch.orderId === order.id || order.pouchId === pouch.id;
+    const sameUser = order.userId && pouch.userId && pouch.userId === order.userId;
+    const sameName = order.customerName && pouch.customerName === order.customerName;
+    if (!sameOrder && !sameUser && !sameName) return pouch;
+    return { ...pouch, courierConfirmedAt: at };
+  });
 }
 
 export function advanceOrder(orderId) {
@@ -1279,6 +1329,8 @@ export function advanceOrder(orderId) {
     o.id === orderId ? { ...o, status: next } : o,
   );
   if (next === 'נשלח') {
+    const current = state.orders.find((o) => o.id === orderId) || order;
+    stampCourierHandover(current);
     state.orders = state.orders.map((o) =>
       o.id === orderId
         ? { ...o, status: next, tracking: trackingFor({ ...o, status: next }) }

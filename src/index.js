@@ -243,6 +243,14 @@ app.patch(
   wrap((req) => store.updatePlan(req.params.id, req.body.field, req.body.value), { staff: true }),
 );
 
+app.post(
+  '/api/admin/products',
+  wrap((req) => store.createProduct(req.body || {}), {
+    staff: true,
+    staffRoles: ['admin', 'warehouse'],
+  }),
+);
+
 app.patch(
   '/api/admin/products/:id',
   wrap((req) => store.updateProduct(req.params.id, req.body.field, req.body.value), {

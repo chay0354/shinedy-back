@@ -1,5 +1,19 @@
 import { isDbEnabled, getSupabase } from './supabase.js';
 
+const OPTIONAL_ORDER_COLS = ['courier_confirmed_at'];
+const OPTIONAL_POUCH_COLS = ['courier_confirmed_at'];
+
+async function upsertRow(client, table, row, optionalCols = []) {
+  const { error } = await client.from(table).upsert(row);
+  if (!error) return;
+  const msg = `${error.message || ''} ${error.details || ''}`;
+  if (!optionalCols.some((c) => msg.includes(c))) throw error;
+  const fallback = { ...row };
+  for (const c of optionalCols) delete fallback[c];
+  const { error: retryError } = await client.from(table).upsert(fallback);
+  if (retryError) throw retryError;
+}
+
 function adminEmail() {
   return (process.env.ADMIN_EMAIL || 'admin@gmail.com').trim().toLowerCase();
 }
@@ -34,6 +48,7 @@ function rowToOrder(row) {
     date: row.order_date,
     qr: row.qr,
     pouchId: row.pouch_id,
+    courierConfirmedAt: row.courier_confirmed_at || null,
   };
 }
 
@@ -49,6 +64,7 @@ function rowToPouch(row) {
     status: row.status,
     scanned: row.scanned,
     createdAt: row.created_at_label,
+    courierConfirmedAt: row.courier_confirmed_at || null,
     demoCustomer: row.demo_customer,
     pendingPoints: row.pending_points,
     pointsCredited: row.points_credited,
@@ -322,20 +338,25 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
   const uniqueOrders = [...new Map(allUserOrders.map((o) => [o.id, o])).values()];
 
   for (const o of uniqueOrders) {
-    const { error } = await client.from('orders').upsert({
-      id: o.id,
-      user_id: o.userId || userId,
-      type: o.type,
-      customer_name: o.customerName,
-      items: o.items,
-      return_items: o.returnItems || [],
-      new_items: o.newItems || [],
-      status: o.status,
-      order_date: o.date,
-      qr: o.qr,
-      pouch_id: o.pouchId,
-    });
-    if (error) throw error;
+    await upsertRow(
+      client,
+      'orders',
+      {
+        id: o.id,
+        user_id: o.userId || userId,
+        type: o.type,
+        customer_name: o.customerName,
+        items: o.items,
+        return_items: o.returnItems || [],
+        new_items: o.newItems || [],
+        status: o.status,
+        order_date: o.date,
+        qr: o.qr,
+        pouch_id: o.pouchId,
+        courier_confirmed_at: o.courierConfirmedAt || null,
+      },
+      OPTIONAL_ORDER_COLS,
+    );
   }
 
   const allUserPouches = [
@@ -345,23 +366,28 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
   const uniquePouches = [...new Map(allUserPouches.map((p) => [p.id, p])).values()];
 
   for (const p of uniquePouches) {
-    const { error } = await client.from('return_pouches').upsert({
-      id: p.id,
-      user_id: p.userId || userId,
-      qr: p.qr,
-      order_id: p.orderId,
-      customer_name: p.customerName,
-      return_items: p.returnItems,
-      new_items: p.newItems || [],
-      status: p.status,
-      scanned: p.scanned,
-      created_at_label: p.createdAt,
-      demo_customer: p.demoCustomer ?? true,
-      pending_points: p.pendingPoints ?? 0,
-      points_credited: p.pointsCredited ?? false,
-      inventory_cleared: p.inventoryCleared ?? false,
-    });
-    if (error) throw error;
+    await upsertRow(
+      client,
+      'return_pouches',
+      {
+        id: p.id,
+        user_id: p.userId || userId,
+        qr: p.qr,
+        order_id: p.orderId,
+        customer_name: p.customerName,
+        return_items: p.returnItems,
+        new_items: p.newItems || [],
+        status: p.status,
+        scanned: p.scanned,
+        created_at_label: p.createdAt,
+        courier_confirmed_at: p.courierConfirmedAt || null,
+        demo_customer: p.demoCustomer ?? true,
+        pending_points: p.pendingPoints ?? 0,
+        points_credited: p.pointsCredited ?? false,
+        inventory_cleared: p.inventoryCleared ?? false,
+      },
+      OPTIONAL_POUCH_COLS,
+    );
   }
 }
 
@@ -429,6 +455,19 @@ export async function ensureAdminByEmail(userId, email) {
 }
 
 export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
+  for (const p of state.products) {
+    const { error } = await getSupabase().from('products').upsert({
+      id: p.id,
+      name: p.name,
+      category: p.category,
+      metal: p.metal,
+      stone: p.stone,
+      points: p.points,
+      price: p.price,
+    });
+    if (error) throw error;
+  }
+
   for (const u of state.units.filter((x) => !x.demoOnly && !x.ownerUserId)) {
     const { error } = await getSupabase().from('units').upsert({
       id: u.id,
@@ -441,40 +480,50 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const o of seedOrders) {
-    const { error } = await getSupabase().from('orders').upsert({
-      id: o.id,
-      user_id: o.userId || null,
-      type: o.type,
-      customer_name: o.customerName,
-      items: o.items,
-      return_items: o.returnItems || [],
-      new_items: o.newItems || [],
-      status: o.status,
-      order_date: o.date,
-      qr: o.qr,
-      pouch_id: o.pouchId,
-    });
-    if (error) throw error;
+    await upsertRow(
+      getSupabase(),
+      'orders',
+      {
+        id: o.id,
+        user_id: o.userId || null,
+        type: o.type,
+        customer_name: o.customerName,
+        items: o.items,
+        return_items: o.returnItems || [],
+        new_items: o.newItems || [],
+        status: o.status,
+        order_date: o.date,
+        qr: o.qr,
+        pouch_id: o.pouchId,
+        courier_confirmed_at: o.courierConfirmedAt || null,
+      },
+      OPTIONAL_ORDER_COLS,
+    );
   }
 
   for (const p of seedPouches) {
-    const { error } = await getSupabase().from('return_pouches').upsert({
-      id: p.id,
-      user_id: p.userId || null,
-      qr: p.qr,
-      order_id: p.orderId,
-      customer_name: p.customerName,
-      return_items: p.returnItems,
-      new_items: p.newItems || [],
-      status: p.status,
-      scanned: p.scanned,
-      created_at_label: p.createdAt,
-      demo_customer: p.demoCustomer ?? false,
-      pending_points: p.pendingPoints ?? 0,
-      points_credited: p.pointsCredited ?? false,
-      inventory_cleared: p.inventoryCleared ?? false,
-    });
-    if (error) throw error;
+    await upsertRow(
+      getSupabase(),
+      'return_pouches',
+      {
+        id: p.id,
+        user_id: p.userId || null,
+        qr: p.qr,
+        order_id: p.orderId,
+        customer_name: p.customerName,
+        return_items: p.returnItems,
+        new_items: p.newItems || [],
+        status: p.status,
+        scanned: p.scanned,
+        created_at_label: p.createdAt,
+        courier_confirmed_at: p.courierConfirmedAt || null,
+        demo_customer: p.demoCustomer ?? false,
+        pending_points: p.pendingPoints ?? 0,
+        points_credited: p.pointsCredited ?? false,
+        inventory_cleared: p.inventoryCleared ?? false,
+      },
+      OPTIONAL_POUCH_COLS,
+    );
   }
 
   for (const p of state.plans) {
@@ -487,18 +536,6 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
       exchanges: p.exchanges,
       shipping: p.shipping,
       tagline: p.tagline,
-    });
-  }
-
-  for (const p of state.products) {
-    await getSupabase().from('products').upsert({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      metal: p.metal,
-      stone: p.stone,
-      points: p.points,
-      price: p.price,
     });
   }
 }
