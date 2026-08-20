@@ -5,6 +5,7 @@ import * as store from './store.js';
 import * as session from './session.js';
 import * as db from './db.js';
 import { pingDatabase, getConfigStatus } from './supabase.js';
+import { clientIp, parseSignupLegal } from './signupLegal.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -22,7 +23,7 @@ app.use(
     },
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));
 
 app.use((err, _req, res, next) => {
   if (err instanceof SyntaxError && 'body' in err) {
@@ -76,12 +77,15 @@ app.post('/api/auth/register', async (req, res) => {
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
+    const legal = parseSignupLegal(req.body);
+    legal.signupIp = clientIp(req);
     if (session.isDbEnabled) {
       const { user, session: authSession } = await session.registerUser({
         email,
         password,
         fullName: fullName.trim(),
         phone: (phone || '').trim(),
+        ...legal,
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
@@ -97,7 +101,12 @@ app.post('/api/auth/register', async (req, res) => {
     return;
     }
     const snapshot = await session.withRequest(req, () =>
-      store.registerMock({ fullName: fullName.trim(), email: email.trim(), phone: (phone || '').trim() }),
+      store.registerMock({
+        fullName: fullName.trim(),
+        email: email.trim(),
+        phone: (phone || '').trim(),
+        ...legal,
+      }),
     );
     res.json(snapshot);
   } catch (e) {
@@ -148,6 +157,11 @@ app.patch(
         patch.signatureCompleted ?? st.registration?.signatureCompleted ?? false,
       paymentMethodAdded:
         patch.paymentMethodAdded ?? st.registration?.paymentMethodAdded ?? false,
+      nationalId: patch.nationalId ?? st.registration?.nationalId,
+      signatureData: patch.signatureData ?? st.registration?.signatureData,
+      termsAcceptedAt: patch.termsAcceptedAt ?? st.registration?.termsAcceptedAt,
+      privacyAcceptedAt: patch.privacyAcceptedAt ?? st.registration?.privacyAcceptedAt,
+      noticesAcceptedAt: patch.noticesAcceptedAt ?? st.registration?.noticesAcceptedAt,
       fullName: st.registration?.fullName,
       email: st.registration?.email,
     };

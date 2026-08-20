@@ -507,6 +507,15 @@ export function getSnapshot() {
           address: state.address || state.registration.address || {},
           payment: state.payment || state.registration.payment || null,
           subscribedAt: state.subscribedAt,
+          idDocumentUploaded: Boolean(
+            state.registration.idDocumentUrl &&
+              String(state.registration.idDocumentUrl).startsWith('data:'),
+          ),
+          signatureCompleted: Boolean(state.registration.signatureCompleted),
+          nationalId: state.registration.nationalId || '',
+          termsAcceptedAt: state.registration.termsAcceptedAt || null,
+          idDocumentUrl: undefined,
+          signatureData: undefined,
         }
       : null,
     auth: state.currentUserId
@@ -810,9 +819,35 @@ export function login() {
   return getSnapshot();
 }
 
-export function registerMock({ fullName, email, phone }) {
+export function registerMock({
+  fullName,
+  email,
+  phone,
+  nationalId,
+  idDocumentUrl,
+  signatureData,
+  signatureCompleted,
+  termsAcceptedAt,
+  privacyAcceptedAt,
+  noticesAcceptedAt,
+  signupIp,
+}) {
   state.currentUserName = fullName;
-  state.registration = { fullName, email, phone, step: 7, name: fullName };
+  state.registration = {
+    fullName,
+    email,
+    phone,
+    step: 7,
+    name: fullName,
+    nationalId: nationalId || '',
+    idDocumentUrl: idDocumentUrl || '',
+    signatureData: signatureData || '',
+    signatureCompleted: signatureCompleted ?? Boolean(signatureData),
+    termsAcceptedAt: termsAcceptedAt || null,
+    privacyAcceptedAt: privacyAcceptedAt || null,
+    noticesAcceptedAt: noticesAcceptedAt || null,
+    signupIp: signupIp || '',
+  };
   return login();
 }
 

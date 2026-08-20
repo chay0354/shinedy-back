@@ -102,9 +102,13 @@ async function persistAfterRequest(req, user, staff = false) {
           phone: reg.phone,
           phone_verified: reg.phoneVerified ?? false,
           email_verified: reg.emailVerified ?? false,
-          id_document_url: reg.idDocumentUrl,
           signature_completed: reg.signatureCompleted ?? false,
           payment_method_added: reg.paymentMethodAdded ?? false,
+          national_id: reg.nationalId,
+          terms_accepted_at: reg.termsAcceptedAt,
+          privacy_accepted_at: reg.privacyAcceptedAt,
+          notices_accepted_at: reg.noticesAcceptedAt,
+          signup_ip: reg.signupIp,
         },
         token,
       );
@@ -170,7 +174,20 @@ export async function deleteAllUsers() {
   return { deleted };
 }
 
-export async function registerUser({ email, password, fullName, phone }) {
+export async function registerUser({
+  email,
+  password,
+  fullName,
+  phone,
+  nationalId,
+  signatureData,
+  idDocumentUrl,
+  signatureCompleted,
+  termsAcceptedAt,
+  privacyAcceptedAt,
+  noticesAcceptedAt,
+  signupIp,
+}) {
   if (!isDbEnabled) {
     throw new Error('Database mode required for registration');
   }
@@ -192,17 +209,32 @@ export async function registerUser({ email, password, fullName, phone }) {
     throw error;
   }
 
+  const legalPatch = {
+    full_name: fullName,
+    email,
+    phone: phone || '',
+    credits: 0,
+    registration_step: 7,
+    national_id: nationalId || null,
+    id_document_url: idDocumentUrl || null,
+    signature_data: signatureData || null,
+    signature_completed: signatureCompleted ?? false,
+    terms_accepted_at: termsAcceptedAt || null,
+    privacy_accepted_at: privacyAcceptedAt || null,
+    notices_accepted_at: noticesAcceptedAt || null,
+    signup_ip: signupIp || null,
+  };
+
   try {
-    await db.ensureUserProfile(data.user.id, {
-      full_name: fullName,
-      email,
-      phone: phone || '',
-      credits: 0,
-      registration_step: 7,
-    });
+    await db.ensureUserProfile(data.user.id, legalPatch);
   } catch (profileErr) {
     // Trigger may already have created the row; don't fail registration for that.
     console.error('ensureUserProfile after register:', profileErr?.message || profileErr);
+  }
+  try {
+    await db.saveSignupLegal(data.user.id, legalPatch);
+  } catch (legalErr) {
+    console.error('saveSignupLegal after register:', legalErr?.message || legalErr);
   }
 
   const { getAuthClient } = await import('./supabase.js');

@@ -208,6 +208,12 @@ export async function loadUserSession(userId, state) {
     paymentMethodAdded: profile.payment_method_added,
     fullName: profile.full_name,
     email: profile.email,
+    nationalId: profile.national_id || '',
+    signatureData: profile.signature_data || '',
+    termsAcceptedAt: profile.terms_accepted_at || null,
+    privacyAcceptedAt: profile.privacy_accepted_at || null,
+    noticesAcceptedAt: profile.notices_accepted_at || null,
+    signupIp: profile.signup_ip || '',
   };
 
   for (const row of ownedUnitsRes.data || []) {
@@ -273,10 +279,14 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     phone: state.registration?.phone,
     phone_verified: state.registration?.phoneVerified ?? false,
     email_verified: state.registration?.emailVerified ?? false,
-    id_document_url: state.registration?.idDocumentUrl,
     signature_completed: state.registration?.signatureCompleted ?? false,
     payment_method_added: state.registration?.paymentMethodAdded ?? false,
     full_name: state.registration?.fullName,
+    national_id: state.registration?.nationalId || null,
+    terms_accepted_at: state.registration?.termsAcceptedAt || null,
+    privacy_accepted_at: state.registration?.privacyAcceptedAt || null,
+    notices_accepted_at: state.registration?.noticesAcceptedAt || null,
+    signup_ip: state.registration?.signupIp || null,
     updated_at: new Date().toISOString(),
   };
 
@@ -290,6 +300,12 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     delete fallback.subscribed_at;
     delete fallback.address;
     delete fallback.payment;
+    delete fallback.national_id;
+    delete fallback.signature_data;
+    delete fallback.terms_accepted_at;
+    delete fallback.privacy_accepted_at;
+    delete fallback.notices_accepted_at;
+    delete fallback.signup_ip;
     const { error: fallbackError } = await client
       .from('profiles')
       .update(fallback)
@@ -350,10 +366,31 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
 }
 
 export async function updateRegistration(userId, patch, _userToken = null) {
+  await saveSignupLegal(userId, patch);
+}
+
+const OPTIONAL_PROFILE_COLS = [
+  'credits_used',
+  'subscribed_at',
+  'address',
+  'payment',
+  'national_id',
+  'signature_data',
+  'terms_accepted_at',
+  'privacy_accepted_at',
+  'notices_accepted_at',
+  'signup_ip',
+];
+
+export async function saveSignupLegal(userId, patch) {
   const client = getSupabase();
   if (!client) throw new Error('Database not configured');
   const { error } = await client.from('profiles').update(patch).eq('id', userId);
-  if (error) throw error;
+  if (!error) return;
+  const fallback = { ...patch };
+  for (const col of OPTIONAL_PROFILE_COLS) delete fallback[col];
+  const { error: fallbackError } = await client.from('profiles').update(fallback).eq('id', userId);
+  if (fallbackError) throw fallbackError;
 }
 
 export async function getUserRole(userId) {
