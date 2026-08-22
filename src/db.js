@@ -230,6 +230,7 @@ export async function loadUserSession(userId, state) {
     privacyAcceptedAt: profile.privacy_accepted_at || null,
     noticesAcceptedAt: profile.notices_accepted_at || null,
     signupIp: profile.signup_ip || '',
+    address: profile.address || {},
   };
 
   for (const row of ownedUnitsRes.data || []) {

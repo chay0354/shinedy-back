@@ -6,6 +6,7 @@ import * as session from './session.js';
 import * as db from './db.js';
 import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
+import { sendContact } from './contact.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -73,13 +74,33 @@ app.get('/api/health/db', async (_req, res) => {
 
 app.get('/api/state', wrap(() => store.getSnapshot()));
 
+app.post('/api/contact', async (req, res) => {
+  try {
+    const result = await sendContact(req.body || {});
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'שליחת הפנייה נכשלה' });
+  }
+});
+
 app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, fullName, phone } = req.body || {};
+    const { email, password, fullName, phone, address: rawAddress } = req.body || {};
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
+    }
+    const address = {
+      street: String(rawAddress?.street || '').trim(),
+      houseNo: String(rawAddress?.houseNo || '').trim(),
+      apt: String(rawAddress?.apt || '').trim(),
+      city: String(rawAddress?.city || '').trim(),
+      zip: String(rawAddress?.zip || '').trim(),
+      notes: String(rawAddress?.notes || '').trim(),
+    };
+    if (!address.street || !address.houseNo || !address.city) {
+      throw new Error('יש למלא כתובת למשלוח (רחוב, מספר בית ועיר)');
     }
     const legal = parseSignupLegal(req.body);
     legal.signupIp = clientIp(req);
@@ -89,14 +110,17 @@ app.post('/api/auth/register', async (req, res) => {
         password,
         fullName: fullName.trim(),
         phone: (phone || '').trim(),
+        address,
         ...legal,
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
       const snapshot = await session.withRequest(req, () => {
+        const st = store.getMutableState();
+        st.address = address;
+        if (st.registration) st.registration.address = address;
         if (req.body?.planId) store.subscribe(req.body.planId);
         if (req.body?.payment) {
-          const st = store.getMutableState();
           st.payment = {
             holder: String(req.body.payment.holder || '').trim(),
             last4: String(req.body.payment.last4 || '').replace(/\D/g, '').slice(-4),
@@ -121,6 +145,7 @@ app.post('/api/auth/register', async (req, res) => {
         fullName: fullName.trim(),
         email: email.trim(),
         phone: (phone || '').trim(),
+        address,
         ...legal,
       });
       if (req.body?.planId) store.subscribe(req.body.planId);

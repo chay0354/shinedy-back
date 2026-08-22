@@ -844,6 +844,7 @@ export function registerMock({
   fullName,
   email,
   phone,
+  address,
   nationalId,
   idDocumentUrl,
   signatureData,
@@ -858,10 +859,12 @@ export function registerMock({
   state.planId = null;
   state.pointsBalance = 0;
   state.myItems = [];
+  state.address = address || {};
   state.registration = {
     fullName,
     email,
     phone,
+    address: address || {},
     step: 7,
     name: fullName,
     nationalId: nationalId || '',
@@ -1247,8 +1250,10 @@ export function pouchItemQC(pouchId, unitId, result) {
 export function updatePlan(id, field, value) {
   const allowed = ['price', 'points', 'maxItems', 'exchanges'];
   if (!allowed.includes(field)) throw new Error('Invalid field');
+  const target = resolvePlan(id);
+  if (!target) throw new Error('המסלול לא נמצא');
   state.plans = state.plans.map((p) =>
-    p.id === id ? { ...p, [field]: Number(value) || 0 } : p,
+    p.id === target.id ? { ...p, [field]: Number(value) || 0 } : p,
   );
   if (state.planId === id && field === 'points') {
     // keep demo simple — do not auto-adjust balance
