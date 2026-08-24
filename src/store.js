@@ -802,6 +802,32 @@ export function changePlan(planId) {
   return getSnapshot();
 }
 
+export function suspendOwnSubscription() {
+  if (!state.subscribed) throw new Error('אין מנוי פעיל');
+  if (isSuspended()) throw new Error('המנוי כבר מוקפא');
+  if ((state.myItems || []).length > 0) {
+    throw new Error('יש להחזיר את כל התכשיטים לפני הקפאת המנוי');
+  }
+  if (!state.registration) state.registration = {};
+  state.registration.suspendedAt = new Date().toISOString();
+  state.registration.suspended = true;
+  state.cart = [];
+  state.exchangeReturns = [];
+  state.exchangeCart = [];
+  state.flash = 'המנוי הוקפא. לא תחויבי ולא תוכלי להזמין עד ההפעלה מחדש.';
+  return getSnapshot();
+}
+
+export function resumeOwnSubscription() {
+  if (!isSuspended()) throw new Error('המנוי אינו מוקפא');
+  if (state.registration) {
+    state.registration.suspendedAt = null;
+    state.registration.suspended = false;
+  }
+  state.flash = 'המנוי הופעל מחדש ✓';
+  return getSnapshot();
+}
+
 export function cancelSubscription() {
   if (!state.subscribed) throw new Error('אין מנוי פעיל');
   if ((state.myItems || []).length > 0) {

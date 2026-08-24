@@ -1,4 +1,5 @@
 import { isDbEnabled, getSupabase } from './supabase.js';
+import { emailsMatch, phonesMatch, signupConflictError } from './contactIdentity.js';
 
 const OPTIONAL_ORDER_COLS = ['courier_confirmed_at'];
 const OPTIONAL_POUCH_COLS = ['courier_confirmed_at'];
@@ -169,6 +170,39 @@ export async function ensureUserProfile(userId, patch = {}) {
   return data?.[0];
 }
 
+async function listProfileContacts() {
+  const admin = getSupabase();
+  if (!admin) return [];
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await admin
+      .from('profiles')
+      .select('id, email, phone')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+export async function findContactConflict({ email, phone, excludeUserId } = {}) {
+  const rows = (await listProfileContacts()).filter((row) => row.id !== excludeUserId);
+  if (email && rows.some((row) => emailsMatch(row.email, email))) {
+    return 'email';
+  }
+  if (phone && rows.some((row) => phonesMatch(row.phone, phone))) {
+    return 'phone';
+  }
+  return null;
+}
+
+export async function assertUniqueContact({ email, phone, excludeUserId } = {}) {
+  const field = await findContactConflict({ email, phone, excludeUserId });
+  if (field) throw signupConflictError(field);
+}
+
 async function loadProfile(userId) {
   const { data, error } = await getSupabase()
     .from('profiles')
@@ -231,6 +265,8 @@ export async function loadUserSession(userId, state) {
     noticesAcceptedAt: profile.notices_accepted_at || null,
     signupIp: profile.signup_ip || '',
     address: profile.address || {},
+    suspendedAt: profile.suspended_at || null,
+    suspended: Boolean(profile.suspended_at),
   };
 
   for (const row of ownedUnitsRes.data || []) {
@@ -304,6 +340,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     privacy_accepted_at: state.registration?.privacyAcceptedAt || null,
     notices_accepted_at: state.registration?.noticesAcceptedAt || null,
     signup_ip: state.registration?.signupIp || null,
+    suspended_at: state.registration?.suspendedAt || null,
     updated_at: new Date().toISOString(),
   };
 
@@ -323,6 +360,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     delete fallback.privacy_accepted_at;
     delete fallback.notices_accepted_at;
     delete fallback.signup_ip;
+    delete fallback.suspended_at;
     const { error: fallbackError } = await client
       .from('profiles')
       .update(fallback)
@@ -407,6 +445,7 @@ const OPTIONAL_PROFILE_COLS = [
   'privacy_accepted_at',
   'notices_accepted_at',
   'signup_ip',
+  'suspended_at',
 ];
 
 export async function saveSignupLegal(userId, patch) {

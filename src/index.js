@@ -7,6 +7,7 @@ import * as db from './db.js';
 import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
+import { signupConflictError } from './contactIdentity.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -85,11 +86,31 @@ app.post('/api/contact', async (req, res) => {
 
 app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 
+app.post('/api/auth/check-signup', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim();
+    const phone = String(req.body?.phone || '').trim();
+    if (!email && !phone) {
+      throw new Error('חסרים אימייל או טלפון');
+    }
+    if (session.isDbEnabled) {
+      const field = await db.findContactConflict({ email, phone });
+      if (field) throw signupConflictError(field);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'בדיקת ההרשמה נכשלה' });
+  }
+});
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, fullName, phone, address: rawAddress } = req.body || {};
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
+    }
+    if (!String(phone || '').trim()) {
+      throw new Error('יש למלא טלפון');
     }
     const address = {
       street: String(rawAddress?.street || '').trim(),
@@ -232,6 +253,16 @@ app.post(
 );
 
 app.post('/api/subscribe/cancel', wrap(() => store.cancelSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+
+app.post(
+  '/api/subscribe/suspend',
+  wrap(() => store.suspendOwnSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
+);
+
+app.post(
+  '/api/subscribe/resume',
+  wrap(() => store.resumeOwnSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
+);
 
 app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 

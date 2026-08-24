@@ -1,6 +1,7 @@
 import { getUserFromToken, isDbEnabled } from './supabase.js';
 import * as db from './db.js';
 import * as store from './store.js';
+import { signupConflictError } from './contactIdentity.js';
 
 let seedOrders = [];
 let seedPouches = [];
@@ -194,6 +195,8 @@ export async function registerUser({
   }
   const { getSupabase } = await import('./supabase.js');
   const supabase = getSupabase();
+  await db.assertUniqueContact({ email, phone });
+
   const { data, error } = await supabase.auth.admin.createUser({
     email,
     password,
@@ -201,11 +204,14 @@ export async function registerUser({
     user_metadata: { full_name: fullName, phone: phone || '' },
   });
   if (error) {
-    const msg = error.message || '';
-    if (msg.includes('already been registered') || msg.includes('already registered')) {
-      const err = new Error('כבר קיים חשבון עם דוא״ל זה');
-      err.status = 422;
-      throw err;
+    const msg = (error.message || '').toLowerCase();
+    if (
+      msg.includes('already been registered') ||
+      msg.includes('already registered') ||
+      msg.includes('user already exists') ||
+      msg.includes('already exists')
+    ) {
+      throw signupConflictError('email');
     }
     throw error;
   }
