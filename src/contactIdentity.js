@@ -1,5 +1,22 @@
 export function emailKey(email) {
-  return String(email || '').trim().toLowerCase();
+  return String(email || '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+export function isValidEmail(email) {
+  return /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i.test(emailKey(email));
+}
+
+export function normalizeSignupEmail(email) {
+  const key = emailKey(email);
+  if (!isValidEmail(key)) {
+    const err = new Error('יש למלא אימייל תקין, למשל name@email.com');
+    err.status = 400;
+    throw err;
+  }
+  return key;
 }
 
 export function phoneKey(phone) {

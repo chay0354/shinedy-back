@@ -7,7 +7,7 @@ import * as db from './db.js';
 import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
-import { normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
+import { normalizeSignupEmail, normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
 import { checkEmailCode, issueEmailCode, verificationEnabled } from './emailVerify.js';
 import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.js';
 
@@ -140,7 +140,8 @@ app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 
 app.post('/api/auth/check-signup', async (req, res) => {
   try {
-    const email = String(req.body?.email || '').trim();
+    const rawEmail = String(req.body?.email || '').trim();
+    const email = rawEmail ? normalizeSignupEmail(rawEmail) : '';
     const rawPhone = String(req.body?.phone || '').trim();
     const phone = rawPhone ? normalizeSignupPhone(rawPhone) : '';
     if (!email && !phone) {
@@ -158,10 +159,11 @@ app.post('/api/auth/check-signup', async (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, fullName, phone, address: rawAddress } = req.body || {};
-    if (!email || !password || !fullName?.trim()) {
+    const { email: rawEmail, password, fullName, phone, address: rawAddress } = req.body || {};
+    if (!rawEmail || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
+    const email = normalizeSignupEmail(rawEmail);
     const mobile = normalizeSignupPhone(phone);
     const address = {
       street: String(rawAddress?.street || '').trim(),
@@ -231,7 +233,11 @@ app.post('/api/auth/register', async (req, res) => {
     });
     res.json(snapshot);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'שגיאה בהרשמה' });
+    const raw = e.message || '';
+    const error = /unable to validate email|invalid format/i.test(raw)
+      ? 'יש למלא אימייל תקין, למשל name@email.com'
+      : raw || 'שגיאה בהרשמה';
+    res.status(e.status || 400).json({ error });
   }
 });
 

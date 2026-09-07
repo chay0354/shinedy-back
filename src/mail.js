@@ -1,26 +1,40 @@
 const BRAND_FROM = 'Shinedy <noreply@shinedyver.fyi>';
 const FALLBACK_FROM = process.env.RESEND_FROM || 'Shinedy <beth.t@example.com>';
 
+function normalizeFrom(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return BRAND_FROM;
+  const angled = value.match(/^(.*)<([^>]+)>$/);
+  const addr = (angled ? angled[2] : value).trim().replace(/^mailto:/i, '');
+  const name = (angled ? angled[1] : 'Shinedy').trim().replace(/^"|"$/g, '') || 'Shinedy';
+  if (addr.includes('@')) return `${name} <${addr}>`;
+  if (addr.includes('.')) return `${name} <noreply@${addr}>`;
+  return BRAND_FROM;
+}
+
 function configuredFrom() {
-  return String(process.env.CONTACT_FROM || BRAND_FROM).trim();
+  return normalizeFrom(process.env.CONTACT_FROM || BRAND_FROM);
 }
 
 function canSendFrom(from) {
   const value = String(from || '').toLowerCase();
-  return Boolean(value) && !value.includes('@shinedy.co');
+  return Boolean(value) && value.includes('@') && !value.includes('@shinedy.co');
 }
 
 function fromCandidates() {
-  const brand = configuredFrom();
   return [...new Set([
-    canSendFrom(brand) ? brand : null,
+    configuredFrom(),
     BRAND_FROM,
     FALLBACK_FROM,
-  ].filter(Boolean))];
+  ].filter(canSendFrom))];
 }
 
-function isDomainFailure(status, detail) {
-  return status === 403 || /domain is not verified|not verified/i.test(detail);
+function isRetryableSendFailure(status, detail) {
+  return (
+    status === 403 ||
+    status === 422 ||
+    /domain is not verified|not verified|invalid format|unable to validate/i.test(detail)
+  );
 }
 
 async function postResendEmail(key, payload) {
@@ -43,8 +57,12 @@ export async function sendResendEmail({ to, subject, text, html, replyTo }) {
     err.status = 503;
     throw err;
   }
+  const dest = String(to || '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+    .trim()
+    .toLowerCase();
   const body = {
-    to: [to],
+    to: [dest],
     reply_to: replyTo || undefined,
     subject,
     text,
@@ -56,10 +74,10 @@ export async function sendResendEmail({ to, subject, text, html, replyTo }) {
     last = await postResendEmail(key, { ...body, from });
     if (last.ok) return;
     console.error('Resend error:', last.status, last.detail, from);
-    if (!isDomainFailure(last.status, last.detail)) break;
+    if (!isRetryableSendFailure(last.status, last.detail)) break;
   }
   const err = new Error(
-    isDomainFailure(last?.status, last?.detail || '')
+    /domain is not verified|not verified/i.test(last?.detail || '')
       ? 'שליחת המייל נכשלה. דומיין השולח עדיין לא מאומת ב-Resend.'
       : 'שליחת המייל נכשלה. נסי שוב בעוד רגע.',
   );

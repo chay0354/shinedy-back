@@ -2,14 +2,11 @@ import { createHash, randomInt } from 'node:crypto';
 import { sendVerificationCodeEmail } from './mail.js';
 import { rememberQaOtp } from './qaOtp.js';
 import { getSupabase } from './supabase.js';
+import { emailKey } from './contactIdentity.js';
 
 const TTL_MS = 15 * 60 * 1000;
 const RESEND_GAP_MS = 45 * 1000;
 const codes = new Map();
-
-function emailKey(email) {
-  return String(email || '').trim().toLowerCase();
-}
 
 function hashCode(email, code) {
   return createHash('sha256').update(`${emailKey(email)}:${code}`).digest('hex');

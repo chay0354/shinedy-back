@@ -239,6 +239,11 @@ export async function registerUser({
     ) {
       throw signupConflictError('email');
     }
+    if (msg.includes('unable to validate email') || msg.includes('invalid format')) {
+      const err = new Error('יש למלא אימייל תקין, למשל name@email.com');
+      err.status = 400;
+      throw err;
+    }
     throw error;
   }
 
