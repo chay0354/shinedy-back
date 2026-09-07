@@ -1,5 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
-import { toE164 } from './contactIdentity.js';
+import { phoneKey, toE164 } from './contactIdentity.js';
 import { rememberQaOtp } from './qaOtp.js';
 
 const TTL_MS = 15 * 60 * 1000;
@@ -39,6 +39,24 @@ function twilioHeaders(auth) {
   };
 }
 
+function destinationCandidates(phone) {
+  const e164 = toE164(phone);
+  if (!e164) return [];
+  const key = phoneKey(phone);
+  const trialLegacy = key ? `+9720${key}` : '';
+  return [...new Set([e164, trialLegacy].filter(Boolean))];
+}
+
+async function postTwilioMessage(auth, params) {
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${auth.sid}/Messages.json`, {
+    method: 'POST',
+    headers: twilioHeaders(auth),
+    body: new URLSearchParams(params),
+  });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
 async function sendViaSender(to, code) {
   const auth = accountAuth();
   const { from, messagingSid } = senderConfig();
@@ -47,27 +65,26 @@ async function sendViaSender(to, code) {
     err.status = 503;
     throw err;
   }
-  const params = {
-    To: to,
-    Body: `הקוד לאימות Shinedy הוא ${code}. תקף ל-15 דקות.`,
-  };
-  if (messagingSid) params.MessagingServiceSid = messagingSid;
-  else params.From = from;
-
-  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${auth.sid}/Messages.json`, {
-    method: 'POST',
-    headers: twilioHeaders(auth),
-    body: new URLSearchParams(params),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    console.error('Twilio SMS error:', r.status, data);
-    const err = new Error(
-      data?.message || 'שליחת ה-SMS נכשלה. בדקי את המספר, A2P, וחשבון Twilio.',
-    );
-    err.status = 502;
-    throw err;
+  const dests = destinationCandidates(to);
+  let last = null;
+  for (const dest of dests) {
+    const params = {
+      To: dest,
+      Body: `הקוד לאימות Shinedy הוא ${code}. תקף ל-15 דקות.`,
+    };
+    if (messagingSid) params.MessagingServiceSid = messagingSid;
+    else params.From = from;
+    last = await postTwilioMessage(auth, params);
+    if (last.ok) return;
+    console.error('Twilio SMS error:', last.status, last.data, dest);
+    const unverified = last.data?.code === 21608 || /unverified/i.test(String(last.data?.message || ''));
+    if (!unverified) break;
   }
+  const err = new Error(
+    last?.data?.message || 'שליחת ה-SMS נכשלה. בדקי את המספר, A2P, וחשבון Twilio.',
+  );
+  err.status = 502;
+  throw err;
 }
 
 async function sendViaVerify(to) {
@@ -78,18 +95,22 @@ async function sendViaVerify(to) {
     err.status = 503;
     throw err;
   }
-  const r = await fetch(`https://verify.twilio.com/v2/Services/${verifySid}/Verifications`, {
-    method: 'POST',
-    headers: twilioHeaders(auth),
-    body: new URLSearchParams({ To: to, Channel: 'sms' }),
-  });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    console.error('Twilio verify error:', r.status, data);
-    const err = new Error(data?.message || 'שליחת ה-SMS נכשלה.');
-    err.status = 502;
-    throw err;
+  let last = null;
+  for (const dest of destinationCandidates(to)) {
+    const r = await fetch(`https://verify.twilio.com/v2/Services/${verifySid}/Verifications`, {
+      method: 'POST',
+      headers: twilioHeaders(auth),
+      body: new URLSearchParams({ To: dest, Channel: 'sms' }),
+    });
+    last = { ok: r.ok, data: await r.json().catch(() => ({})) };
+    if (last.ok) return;
+    console.error('Twilio verify error:', r.status, last.data, dest);
+    const unverified = last.data?.code === 21608 || /unverified/i.test(String(last.data?.message || ''));
+    if (!unverified) break;
   }
+  const err = new Error(last?.data?.message || 'שליחת ה-SMS נכשלה.');
+  err.status = 502;
+  throw err;
 }
 
 function usesOwnSender() {
@@ -100,7 +121,7 @@ function usesOwnSender() {
 export async function issueSmsCode(phone) {
   const to = toE164(phone);
   if (!to) {
-    const err = new Error('חסר מספר טלפון');
+    const err = new Error('יש למלא מספר נייד תקין, למשל 0543456305');
     err.status = 400;
     throw err;
   }

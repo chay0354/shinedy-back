@@ -7,7 +7,7 @@ import * as db from './db.js';
 import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
-import { signupConflictError } from './contactIdentity.js';
+import { normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
 import { checkEmailCode, issueEmailCode, verificationEnabled } from './emailVerify.js';
 import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.js';
 
@@ -132,7 +132,8 @@ app.post('/api/flash/clear', wrap(() => store.clearFlash(), { auth: false }));
 app.post('/api/auth/check-signup', async (req, res) => {
   try {
     const email = String(req.body?.email || '').trim();
-    const phone = String(req.body?.phone || '').trim();
+    const rawPhone = String(req.body?.phone || '').trim();
+    const phone = rawPhone ? normalizeSignupPhone(rawPhone) : '';
     if (!email && !phone) {
       throw new Error('חסרים אימייל או טלפון');
     }
@@ -152,9 +153,7 @@ app.post('/api/auth/register', async (req, res) => {
     if (!email || !password || !fullName?.trim()) {
       throw new Error('חסרים שם, אימייל או סיסמה');
     }
-    if (!String(phone || '').trim()) {
-      throw new Error('יש למלא טלפון');
-    }
+    const mobile = normalizeSignupPhone(phone);
     const address = {
       street: String(rawAddress?.street || '').trim(),
       houseNo: String(rawAddress?.houseNo || '').trim(),
@@ -173,7 +172,7 @@ app.post('/api/auth/register', async (req, res) => {
         email,
         password,
         fullName: fullName.trim(),
-        phone: (phone || '').trim(),
+        phone: mobile,
         address,
         ...legal,
       });
@@ -214,7 +213,7 @@ app.post('/api/auth/register', async (req, res) => {
       const snap = store.registerMock({
         fullName: fullName.trim(),
         email: email.trim(),
-        phone: (phone || '').trim(),
+        phone: mobile,
         address,
         ...legal,
       });
