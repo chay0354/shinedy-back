@@ -1,5 +1,18 @@
-const BRAND_FROM = process.env.CONTACT_FROM || 'Shinedy <noreply@shinedy.co>';
 const FALLBACK_FROM = process.env.RESEND_FROM || 'Shinedy <beth.t@example.com>';
+
+function configuredFrom() {
+  return String(process.env.CONTACT_FROM || process.env.RESEND_FROM || FALLBACK_FROM).trim();
+}
+
+function canSendFrom(from) {
+  const value = String(from || '').toLowerCase();
+  return Boolean(value) && !value.includes('@shinedy.co');
+}
+
+function fromCandidates() {
+  const brand = configuredFrom();
+  return [...new Set([FALLBACK_FROM, canSendFrom(brand) ? brand : null].filter(Boolean))];
+}
 
 function isDomainFailure(status, detail) {
   return status === 403 || /domain is not verified|not verified/i.test(detail);
@@ -32,7 +45,7 @@ export async function sendResendEmail({ to, subject, text, html, replyTo }) {
     text,
     html: html || undefined,
   };
-  const froms = [...new Set([BRAND_FROM, FALLBACK_FROM].filter(Boolean))];
+  const froms = fromCandidates();
   let last = null;
   for (const from of froms) {
     last = await postResendEmail(key, { ...body, from });
