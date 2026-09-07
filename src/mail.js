@@ -1,7 +1,8 @@
+const BRAND_FROM = 'Shinedy <noreply@shinedyver.fyi>';
 const FALLBACK_FROM = process.env.RESEND_FROM || 'Shinedy <beth.t@example.com>';
 
 function configuredFrom() {
-  return String(process.env.CONTACT_FROM || process.env.RESEND_FROM || FALLBACK_FROM).trim();
+  return String(process.env.CONTACT_FROM || BRAND_FROM).trim();
 }
 
 function canSendFrom(from) {
@@ -11,7 +12,11 @@ function canSendFrom(from) {
 
 function fromCandidates() {
   const brand = configuredFrom();
-  return [...new Set([FALLBACK_FROM, canSendFrom(brand) ? brand : null].filter(Boolean))];
+  return [...new Set([
+    canSendFrom(brand) ? brand : null,
+    BRAND_FROM,
+    FALLBACK_FROM,
+  ].filter(Boolean))];
 }
 
 function isDomainFailure(status, detail) {
