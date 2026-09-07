@@ -122,6 +122,37 @@ export async function loadCatalogIntoState(state) {
   return { seedOrders, seedPouches };
 }
 
+export async function loadStaffCustomers() {
+  const admin = getSupabase();
+  if (!admin) return [];
+  const { data, error } = await admin
+    .from('profiles')
+    .select(
+      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, suspended_at, points_balance',
+    )
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || [])
+    .filter((row) => resolveUserRole(row) === 'customer')
+    .map((row) => ({
+      id: row.id,
+      name: row.full_name || row.email || 'לקוחה',
+      phone: row.phone || '',
+      email: row.email || '',
+      planId: row.plan_id || null,
+      plan: row.plan_id || '',
+      status: row.suspended_at ? 'מוקפא' : row.subscribed ? 'פעיל' : 'לא פעיל',
+      joined: row.created_at ? new Date(row.created_at).toLocaleDateString('he-IL') : '',
+      joinedAt: row.created_at || null,
+      nationalId: row.national_id || '',
+      idDocumentUploaded: Boolean(row.id_document_url),
+      signatureCompleted: Boolean(row.signature_completed),
+      termsAcceptedAt: row.terms_accepted_at || null,
+      address: row.address || {},
+      points: String(row.points_balance ?? 0),
+    }));
+}
+
 export async function refreshOpsIntoState(state) {
   const [unitsRes, ordersRes, pouchesRes] = await Promise.all([
     getSupabase().from('units').select('*'),

@@ -65,6 +65,7 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
     st.currentUserName = staffUser.email || 'צוות';
     store.mergeOrders(seedOrders);
     store.mergePouches(seedPouches);
+    store.getMutableState().staffCustomers = await db.loadStaffCustomers();
     return null;
   }
 
@@ -79,8 +80,16 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
 
   if (user) {
     const session = await db.loadUserSession(user.id, store.getMutableState());
-    store.mergeOrders([...seedOrders, ...session.userOrders]);
-    store.mergePouches([...seedPouches, ...session.userPouches]);
+    const role = store.getMutableState().currentUserRole;
+    if (role === 'admin' || role === 'warehouse') {
+      await refreshSeedFromDb();
+      store.mergeOrders(seedOrders);
+      store.mergePouches(seedPouches);
+      store.getMutableState().staffCustomers = await db.loadStaffCustomers();
+    } else {
+      store.mergeOrders([...seedOrders, ...session.userOrders]);
+      store.mergePouches([...seedPouches, ...session.userPouches]);
+    }
     if (customerOnly) {
       rejectStaffFromCustomerRoute();
     }

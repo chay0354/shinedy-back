@@ -111,6 +111,7 @@ function makeInitialState() {
     pouchCounter: 9002,
     lastPouchId: null,
     // Manager fixtures only — not the interactive demo customer
+    staffCustomers: [],
     seedCustomers: [
       { id: 'seed-0', name: 'נועה כהן', plan: 'Signature', points: '520/800', status: 'פעיל', phone: '050-1111111', email: 'noa@example.com' },
       { id: 'seed-1', name: 'תמר לוי', plan: 'Prestige', points: '1100/1400', status: 'פעיל', phone: '052-2222222', email: 'tamar@example.com' },
@@ -646,7 +647,9 @@ export function getSnapshot() {
       )
       .filter(Boolean),
     // Manager customers table: seed fixtures only (demo user stays in /account)
-    customers: staff ? state.seedCustomers : undefined,
+    customers: staff
+      ? (state.staffCustomers?.length ? state.staffCustomers : state.seedCustomers)
+      : undefined,
     inventory: staff
       ? state.products.map((p) => ({
           id: p.id,
