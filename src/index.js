@@ -8,6 +8,8 @@ import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
 import { signupConflictError } from './contactIdentity.js';
+import { checkEmailCode, issueEmailCode, verificationEnabled } from './emailVerify.js';
+import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -42,6 +44,47 @@ app.use((err, _req, res, next) => {
 app.get('/', (_req, res) => {
   res.redirect('/api/health');
 });
+
+function needsEmailVerification(snapshot) {
+  if (!verificationEnabled()) return false;
+  const role = snapshot?.auth?.role;
+  if (role === 'admin' || role === 'warehouse') return false;
+  return !snapshot?.registration?.emailVerified;
+}
+
+function needsPhoneVerification(snapshot) {
+  if (!smsVerificationEnabled()) return false;
+  const role = snapshot?.auth?.role;
+  if (role === 'admin' || role === 'warehouse') return false;
+  return !snapshot?.registration?.phoneVerified;
+}
+
+async function sendVerifyIfNeeded(snapshot, { dispatch = true } = {}) {
+  const emailNeeded = needsEmailVerification(snapshot);
+  const phoneNeeded = needsPhoneVerification(snapshot);
+  if (dispatch) {
+    const jobs = [];
+    if (emailNeeded && snapshot?.registration?.email) {
+      jobs.push(
+        issueEmailCode(snapshot.registration.email).catch((e) => {
+          if (e.status !== 429) console.error('email verify send:', e.message || e);
+        }),
+      );
+    }
+    if (phoneNeeded && snapshot?.registration?.phone) {
+      jobs.push(
+        issueSmsCode(snapshot.registration.phone).catch((e) => {
+          if (e.status !== 429) console.error('sms verify send:', e.message || e);
+        }),
+      );
+    }
+    await Promise.all(jobs);
+  }
+  return {
+    needsEmailVerification: emailNeeded,
+    needsPhoneVerification: phoneNeeded,
+  };
+}
 
 function wrap(fn, opts = {}) {
   return async (req, res) => {
@@ -149,8 +192,13 @@ app.post('/api/auth/register', async (req, res) => {
           };
           if (st.registration) st.registration.paymentMethodAdded = true;
         }
+        if (st.registration) {
+          st.registration.emailVerified = false;
+          st.registration.phoneVerified = false;
+        }
         return store.getSnapshot();
       });
+      const pending = await sendVerifyIfNeeded(snapshot);
       res.json({
         session: {
           access_token: authSession.access_token,
@@ -158,6 +206,7 @@ app.post('/api/auth/register', async (req, res) => {
           expires_at: authSession.expires_at,
         },
         ...snapshot,
+        ...pending,
       });
       return;
     }
@@ -186,6 +235,7 @@ app.post('/api/auth/login', async (req, res) => {
       const { session: authSession } = await session.loginUser({ email, password });
       req.headers.authorization = `Bearer ${authSession.access_token}`;
       const snapshot = await session.withRequest(req, () => store.getSnapshot());
+      const pending = await sendVerifyIfNeeded(snapshot);
       res.json({
         session: {
           access_token: authSession.access_token,
@@ -193,6 +243,7 @@ app.post('/api/auth/login', async (req, res) => {
           expires_at: authSession.expires_at,
         },
         ...snapshot,
+        ...pending,
       });
       return;
     }
@@ -200,6 +251,44 @@ app.post('/api/auth/login', async (req, res) => {
     res.json(snapshot);
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message });
+  }
+});
+
+app.post('/api/auth/verify-email', wrap(async (req) => {
+  const st = store.getMutableState();
+  const email = String(req.body?.email || st.registration?.email || '').trim();
+  checkEmailCode(email, req.body?.code);
+  if (st.registration) st.registration.emailVerified = true;
+  const snapshot = store.getSnapshot();
+  const pending = await sendVerifyIfNeeded(snapshot, { dispatch: false });
+  return { emailVerified: true, ...snapshot, ...pending };
+}, { auth: true }));
+
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim();
+    await issueEmailCode(email);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'שליחת הקוד נכשלה' });
+  }
+});
+
+app.post('/api/auth/verify-phone', wrap(async (req) => {
+  const st = store.getMutableState();
+  const phone = String(req.body?.phone || st.registration?.phone || '').trim();
+  await checkSmsCode(phone, req.body?.code);
+  if (st.registration) st.registration.phoneVerified = true;
+  return { phoneVerified: true, ...store.getSnapshot() };
+}, { auth: true }));
+
+app.post('/api/auth/resend-phone-verification', async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    await issueSmsCode(phone);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'שליחת ה-SMS נכשלה' });
   }
 });
 

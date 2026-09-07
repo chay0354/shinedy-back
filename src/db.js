@@ -122,6 +122,22 @@ export async function loadCatalogIntoState(state) {
   return { seedOrders, seedPouches };
 }
 
+export async function refreshOpsIntoState(state) {
+  const [unitsRes, ordersRes, pouchesRes] = await Promise.all([
+    getSupabase().from('units').select('*'),
+    getSupabase().from('orders').select('*'),
+    getSupabase().from('return_pouches').select('*'),
+  ]);
+  if (unitsRes.error) throw unitsRes.error;
+  if (ordersRes.error) throw ordersRes.error;
+  if (pouchesRes.error) throw pouchesRes.error;
+  state.units = (unitsRes.data || []).map(rowToUnit);
+  return {
+    seedOrders: (ordersRes.data || []).map(rowToOrder),
+    seedPouches: (pouchesRes.data || []).map(rowToPouch),
+  };
+}
+
 export async function ensureUserProfile(userId, patch = {}) {
   const admin = getSupabase();
   if (!admin) throw new Error('Database not configured');
@@ -508,13 +524,13 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
     if (error) throw error;
   }
 
-  for (const u of state.units.filter((x) => !x.demoOnly && !x.ownerUserId)) {
+  for (const u of state.units.filter((x) => !x.demoOnly)) {
     const { error } = await getSupabase().from('units').upsert({
       id: u.id,
       model_id: u.modelId,
       status: u.status,
       demo_only: false,
-      owner_user_id: null,
+      owner_user_id: u.ownerUserId || null,
     });
     if (error) throw error;
   }

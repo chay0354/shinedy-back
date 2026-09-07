@@ -2,6 +2,12 @@ export function emailKey(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+export function toE164(phone) {
+  const key = phoneKey(phone);
+  if (!key) return '';
+  return `+972${key}`;
+}
+
 export function phoneKey(phone) {
   let digits = String(phone || '').replace(/\D/g, '');
   if (!digits) return '';

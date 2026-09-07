@@ -18,27 +18,15 @@ export async function sendContact(body = {}) {
   }
 
   const text = `שם: ${name}\nאימייל: ${email}\nנושא: ${subject}\n\n${message}`;
-  const resendKey = process.env.RESEND_API_KEY;
 
-  if (resendKey) {
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${resendKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: process.env.CONTACT_FROM || 'Shinedy <noreply@shinedy.co>',
-        to: [TO],
-        reply_to: email,
-        subject: `פנייה מהאתר: ${subject}`,
-        text,
-      }),
+  if (process.env.RESEND_API_KEY) {
+    const { sendResendEmail } = await import('./mail.js');
+    await sendResendEmail({
+      to: TO,
+      replyTo: email,
+      subject: `פנייה מהאתר: ${subject}`,
+      text,
     });
-    if (!r.ok) {
-      const detail = await r.text().catch(() => '');
-      throw new Error(detail || 'שליחת המייל נכשלה');
-    }
     return { ok: true };
   }
 

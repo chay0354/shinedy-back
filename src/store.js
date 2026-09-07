@@ -310,6 +310,15 @@ function reconcileCustomerUnits() {
       continue;
     }
 
+    if (delivered && (u.status === 'בדרך ללקוחה' || u.status === 'זמין')) {
+      state.units[idx] = {
+        ...u,
+        status: 'אצל לקוחה',
+        ownerUserId: state.currentUserId,
+      };
+      continue;
+    }
+
     if (u.status === 'זמין' || (u.status === 'אצל לקוחה' && purchaseOrder && !delivered)) {
       state.units[idx] = {
         ...u,
@@ -321,14 +330,6 @@ function reconcileCustomerUnits() {
 
     if (!u.ownerUserId) {
       state.units[idx] = { ...u, ownerUserId: state.currentUserId };
-    }
-  }
-
-  for (const o of state.orders) {
-    if (o.userId !== state.currentUserId || o.type !== 'הזמנה') continue;
-    const anyInTransit = (o.items || []).some((uid) => unit(uid)?.status === 'בדרך ללקוחה');
-    if (anyInTransit && o.status === 'נשלח') {
-      o.status = 'ליקוט';
     }
   }
 
@@ -542,6 +543,16 @@ export function getSnapshot() {
     auth: state.currentUserId
       ? { userId: state.currentUserId, role: state.currentUserRole }
       : null,
+    verify: {
+      email: Boolean(process.env.RESEND_API_KEY),
+      sms: Boolean(
+        process.env.TWILIO_ACCOUNT_SID &&
+          process.env.TWILIO_AUTH_TOKEN &&
+          (process.env.TWILIO_FROM_NUMBER ||
+            process.env.TWILIO_MESSAGING_SERVICE_SID ||
+            process.env.TWILIO_VERIFY_SID),
+      ),
+    },
     cart: state.cart.map((id) => product(id)),
     cartTotal: cartPoints(),
     remaining,

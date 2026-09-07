@@ -41,13 +41,28 @@ function rejectStaffFromCustomerRoute() {
   }
 }
 
+function mergeById(existing, incoming) {
+  return [...new Map([...existing, ...incoming].map((row) => [row.id, row])).values()];
+}
+
+async function refreshSeedFromDb() {
+  const fresh = await db.refreshOpsIntoState(store.getMutableState());
+  seedOrders = fresh.seedOrders;
+  seedPouches = fresh.seedPouches;
+}
+
 async function hydrateForRequest(req, { auth = false, staff = false, staffRoles = ['admin'], customerOnly = false } = {}) {
   await initDbIfNeeded();
   if (!isDbEnabled) return null;
 
   if (staff) {
-    await requireStaffAccess(req, staffRoles);
+    const staffUser = await requireStaffAccess(req, staffRoles);
+    await refreshSeedFromDb();
     store.clearUserSession();
+    const st = store.getMutableState();
+    st.currentUserId = staffUser.id;
+    st.currentUserRole = await db.getUserRole(staffUser.id);
+    st.currentUserName = staffUser.email || 'צוות';
     store.mergeOrders(seedOrders);
     store.mergePouches(seedPouches);
     return null;
@@ -115,6 +130,8 @@ async function persistAfterRequest(req, user, staff = false) {
       );
     }
     await db.persistUserSession(user.id, st, userOrders, userPouches, token);
+    seedOrders = mergeById(seedOrders, userOrders);
+    seedPouches = mergeById(seedPouches, userPouches);
     return;
   }
 
@@ -135,7 +152,7 @@ let requestQueue = Promise.resolve();
 export async function withRequest(req, fn, opts = {}) {
   const run = requestQueue.then(async () => {
     const user = await hydrateForRequest(req, opts);
-    const result = fn();
+    const result = await fn();
     await persistAfterRequest(req, user, opts.staff);
     return result;
   });
