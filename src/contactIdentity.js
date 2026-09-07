@@ -29,7 +29,7 @@ export function toLocalIl(phone) {
 export function normalizeSignupPhone(phone) {
   const local = toLocalIl(phone);
   if (!local) {
-    const err = new Error('יש למלא מספר נייד תקין, למשל 0543456305');
+    const err = new Error('יש למלא מספר נייד תקין, למשל 0500000000');
     err.status = 400;
     throw err;
   }
