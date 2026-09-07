@@ -356,7 +356,7 @@ app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { a
 
 app.post('/api/cart/remove', wrap((req) => store.removeFromCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/cart/confirm', wrap(() => store.confirmOrder(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post('/api/cart/confirm', wrap((req) => store.confirmOrder(req.body || {}), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post(
   '/api/exchange/toggle-return',

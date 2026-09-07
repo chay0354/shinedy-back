@@ -952,11 +952,16 @@ function makeQrCode() {
   return `QR-${random}${userIdSuffix()}`;
 }
 
-export function confirmOrder() {
+export function confirmOrder(payload = {}) {
   if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
   if (hasOpenReturn()) throw new Error('לא ניתן לבצע כרגע החלפה חדשה — ההחזרה מההחלפה הקודמת עדיין לא הושלמה');
   if (!state.cart.length) throw new Error('הסל ריק');
   if (remainingPoints() < 0) throw new Error('חריגה ממכסת הנקודות');
+  const notes = String(payload.notes ?? payload.address?.notes ?? '').trim();
+  state.address = { ...(state.address || {}), notes };
+  if (state.registration) {
+    state.registration.address = { ...(state.registration.address || state.address || {}), notes };
+  }
   const orderItems = [];
   for (const pid of state.cart) {
     const idx = state.units.findIndex((u) => u.modelId === pid && u.status === 'זמין');
