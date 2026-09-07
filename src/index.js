@@ -62,27 +62,36 @@ function needsPhoneVerification(snapshot) {
 async function sendVerifyIfNeeded(snapshot, { dispatch = true } = {}) {
   const emailNeeded = needsEmailVerification(snapshot);
   const phoneNeeded = needsPhoneVerification(snapshot);
+  let emailSendError = null;
+  let smsSendError = null;
   if (dispatch) {
-    const jobs = [];
     if (emailNeeded && snapshot?.registration?.email) {
-      jobs.push(
-        issueEmailCode(snapshot.registration.email).catch((e) => {
-          if (e.status !== 429) console.error('email verify send:', e.message || e);
-        }),
-      );
+      try {
+        await issueEmailCode(snapshot.registration.email);
+      } catch (e) {
+        if (e.status !== 429) {
+          console.error('email verify send:', e.message || e);
+          emailSendError = e.message || 'שליחת המייל נכשלה';
+        }
+      }
     }
     if (phoneNeeded && snapshot?.registration?.phone) {
-      jobs.push(
-        issueSmsCode(snapshot.registration.phone).catch((e) => {
-          if (e.status !== 429) console.error('sms verify send:', e.message || e);
-        }),
-      );
+      try {
+        await issueSmsCode(snapshot.registration.phone);
+      } catch (e) {
+        if (e.status !== 429) {
+          console.error('sms verify send:', e.message || e);
+          smsSendError = e.message || 'שליחת ה-SMS נכשלה';
+        }
+      }
     }
-    await Promise.all(jobs);
   }
   return {
     needsEmailVerification: emailNeeded,
     needsPhoneVerification: phoneNeeded,
+    emailSent: Boolean(emailNeeded && !emailSendError),
+    emailSendError,
+    smsSendError,
   };
 }
 
@@ -256,7 +265,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.post('/api/auth/verify-email', wrap(async (req) => {
   const st = store.getMutableState();
   const email = String(req.body?.email || st.registration?.email || '').trim();
-  checkEmailCode(email, req.body?.code);
+  await checkEmailCode(email, req.body?.code);
   if (st.registration) st.registration.emailVerified = true;
   const snapshot = store.getSnapshot();
   const pending = await sendVerifyIfNeeded(snapshot, { dispatch: false });
@@ -329,7 +338,19 @@ app.patch(
   }, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
-app.post('/api/subscribe', wrap((req) => store.subscribe(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post('/api/subscribe', wrap((req) => {
+  const payment = req.body?.payment;
+  if (payment) {
+    const st = store.getMutableState();
+    st.payment = {
+      holder: String(payment.holder || '').trim(),
+      last4: String(payment.last4 || '').replace(/\D/g, '').slice(-4),
+      expiry: String(payment.expiry || '').trim(),
+    };
+    if (st.registration) st.registration.paymentMethodAdded = true;
+  }
+  return store.subscribe(req.body.planId);
+}, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post('/api/subscribe/change', wrap((req) => store.changePlan(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 

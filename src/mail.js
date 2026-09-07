@@ -1,4 +1,22 @@
-const DEFAULT_FROM = process.env.CONTACT_FROM || 'Shinedy <noreply@shinedy.co>';
+const BRAND_FROM = process.env.CONTACT_FROM || 'Shinedy <noreply@shinedy.co>';
+const FALLBACK_FROM = process.env.RESEND_FROM || 'Shinedy <beth.t@example.com>';
+
+function isDomainFailure(status, detail) {
+  return status === 403 || /domain is not verified|not verified/i.test(detail);
+}
+
+async function postResendEmail(key, payload) {
+  const r = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const detail = await r.text().catch(() => '');
+  return { ok: r.ok, status: r.status, detail };
+}
 
 export async function sendResendEmail({ to, subject, text, html, replyTo }) {
   const key = process.env.RESEND_API_KEY;
@@ -7,28 +25,28 @@ export async function sendResendEmail({ to, subject, text, html, replyTo }) {
     err.status = 503;
     throw err;
   }
-  const r = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: DEFAULT_FROM,
-      to: [to],
-      reply_to: replyTo || undefined,
-      subject,
-      text,
-      html: html || undefined,
-    }),
-  });
-  if (!r.ok) {
-    const detail = await r.text().catch(() => '');
-    console.error('Resend error:', r.status, detail);
-    const err = new Error('שליחת המייל נכשלה. בדקי שהדומיין מאומת ב-Resend.');
-    err.status = 502;
-    throw err;
+  const body = {
+    to: [to],
+    reply_to: replyTo || undefined,
+    subject,
+    text,
+    html: html || undefined,
+  };
+  const froms = [...new Set([BRAND_FROM, FALLBACK_FROM].filter(Boolean))];
+  let last = null;
+  for (const from of froms) {
+    last = await postResendEmail(key, { ...body, from });
+    if (last.ok) return;
+    console.error('Resend error:', last.status, last.detail, from);
+    if (!isDomainFailure(last.status, last.detail)) break;
   }
+  const err = new Error(
+    isDomainFailure(last?.status, last?.detail || '')
+      ? 'שליחת המייל נכשלה. דומיין השולח עדיין לא מאומת ב-Resend.'
+      : 'שליחת המייל נכשלה. נסי שוב בעוד רגע.',
+  );
+  err.status = 502;
+  throw err;
 }
 
 export async function sendVerificationCodeEmail(email, code) {
