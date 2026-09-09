@@ -134,14 +134,15 @@ export async function issueSmsCode(phone) {
 
   if (usesOwnSender()) {
     const code = String(randomInt(100000, 1000000));
-    await savePendingOtp('sms', to, {
+    const row = {
       hash: hashCode(to, code),
       expiresAt: Date.now() + TTL_MS,
       sentAt: Date.now(),
       attempts: 0,
-    });
+    };
     rememberQaOtp('sms', to, code);
     await sendViaSender(to, code);
+    await savePendingOtp('sms', to, row);
   } else {
     await sendViaVerify(to);
   }

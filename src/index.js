@@ -283,7 +283,7 @@ app.post('/api/auth/verify-email', wrap(async (req) => {
 
 app.post('/api/auth/resend-verification', async (req, res) => {
   try {
-    const email = String(req.body?.email || '').trim();
+    const email = normalizeSignupEmail(String(req.body?.email || ''));
     await issueEmailCode(email);
     res.json({ ok: true });
   } catch (e) {
@@ -321,7 +321,7 @@ app.post('/api/auth/verify-phone', wrap(async (req) => {
 
 app.post('/api/auth/resend-phone-verification', async (req, res) => {
   try {
-    const phone = String(req.body?.phone || '').trim();
+    const phone = normalizeSignupPhone(String(req.body?.phone || ''));
     await issueSmsCode(phone);
     res.json({ ok: true });
   } catch (e) {
