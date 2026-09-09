@@ -3,10 +3,10 @@ import { sendVerificationCodeEmail } from './mail.js';
 import { rememberQaOtp } from './qaOtp.js';
 import { getSupabase } from './supabase.js';
 import { emailKey } from './contactIdentity.js';
+import { clearPendingOtp, loadPendingOtp, savePendingOtp } from './pendingOtp.js';
 
 const TTL_MS = 15 * 60 * 1000;
 const RESEND_GAP_MS = 45 * 1000;
-const codes = new Map();
 
 function hashCode(email, code) {
   return createHash('sha256').update(`${emailKey(email)}:${code}`).digest('hex');
@@ -28,7 +28,7 @@ async function findUserIdByEmail(email) {
 }
 
 async function persistOtp(email, row) {
-  codes.set(email, row);
+  await savePendingOtp('email', email, row);
   const admin = getSupabase();
   const userId = await findUserIdByEmail(email);
   if (!admin || !userId) return;
@@ -45,7 +45,8 @@ async function persistOtp(email, row) {
 }
 
 async function readOtp(email) {
-  if (codes.has(email)) return codes.get(email);
+  const pending = await loadPendingOtp('email', email);
+  if (pending) return pending;
   const admin = getSupabase();
   const userId = await findUserIdByEmail(email);
   if (!admin || !userId) return null;
@@ -55,12 +56,12 @@ async function readOtp(email) {
     return null;
   }
   const row = data?.user?.user_metadata?.email_otp;
-  if (row) codes.set(email, row);
+  if (row) await savePendingOtp('email', email, row);
   return row || null;
 }
 
 async function clearOtp(email) {
-  codes.delete(email);
+  await clearPendingOtp('email', email);
   const admin = getSupabase();
   const userId = await findUserIdByEmail(email);
   if (!admin || !userId) return;

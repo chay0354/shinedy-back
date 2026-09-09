@@ -10,6 +10,7 @@ import { sendContact } from './contact.js';
 import { normalizeSignupEmail, normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
 import { checkEmailCode, issueEmailCode, verificationEnabled } from './emailVerify.js';
 import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.js';
+import { signupProofValid, signupVerifyProof } from './signupProof.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -203,8 +204,10 @@ app.post('/api/auth/register', async (req, res) => {
           if (st.registration) st.registration.paymentMethodAdded = true;
         }
         if (st.registration) {
-          st.registration.emailVerified = false;
-          st.registration.phoneVerified = false;
+          st.registration.emailVerified =
+            !verificationEnabled() || signupProofValid('email', email, req.body?.emailProof);
+          st.registration.phoneVerified =
+            !smsVerificationEnabled() || signupProofValid('sms', mobile, req.body?.phoneProof);
         }
         return store.getSnapshot();
       });
@@ -285,6 +288,26 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(e.status || 400).json({ error: e.message || 'שליחת הקוד נכשלה' });
+  }
+});
+
+app.post('/api/auth/check-email-code', async (req, res) => {
+  try {
+    const email = normalizeSignupEmail(String(req.body?.email || ''));
+    await checkEmailCode(email, req.body?.code);
+    res.json({ ok: true, proof: signupVerifyProof('email', email) });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'הקוד שגוי' });
+  }
+});
+
+app.post('/api/auth/check-phone-code', async (req, res) => {
+  try {
+    const phone = normalizeSignupPhone(String(req.body?.phone || ''));
+    await checkSmsCode(phone, req.body?.code);
+    res.json({ ok: true, proof: signupVerifyProof('sms', phone) });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message || 'הקוד שגוי' });
   }
 });
 

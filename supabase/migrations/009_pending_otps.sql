@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS pending_otps (
+  dest TEXT PRIMARY KEY,
+  channel TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL,
+  attempts INT NOT NULL DEFAULT 0
+);
+
+ALTER TABLE pending_otps ENABLE ROW LEVEL SECURITY;

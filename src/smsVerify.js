@@ -1,10 +1,10 @@
 import { createHash, randomInt } from 'node:crypto';
 import { phoneKey, toE164 } from './contactIdentity.js';
 import { rememberQaOtp } from './qaOtp.js';
+import { clearPendingOtp, loadPendingOtp, savePendingOtp } from './pendingOtp.js';
 
 const TTL_MS = 15 * 60 * 1000;
 const RESEND_GAP_MS = 45 * 1000;
-const codes = new Map();
 
 function accountAuth() {
   const sid = process.env.TWILIO_ACCOUNT_SID?.trim();
@@ -125,7 +125,7 @@ export async function issueSmsCode(phone) {
     err.status = 400;
     throw err;
   }
-  const prev = codes.get(to);
+  const prev = await loadPendingOtp('sms', to);
   if (prev && Date.now() - prev.sentAt < RESEND_GAP_MS) {
     const err = new Error('יש להמתין רגע לפני שליחת קוד חדש');
     err.status = 429;
@@ -134,7 +134,7 @@ export async function issueSmsCode(phone) {
 
   if (usesOwnSender()) {
     const code = String(randomInt(100000, 1000000));
-    codes.set(to, {
+    await savePendingOtp('sms', to, {
       hash: hashCode(to, code),
       expiresAt: Date.now() + TTL_MS,
       sentAt: Date.now(),
@@ -158,26 +158,27 @@ export async function checkSmsCode(phone, rawCode) {
   }
 
   if (usesOwnSender()) {
-    const row = codes.get(to);
+    const row = await loadPendingOtp('sms', to);
     if (!row || Date.now() > row.expiresAt) {
-      codes.delete(to);
+      await clearPendingOtp('sms', to);
       const err = new Error('הקוד פג תוקף. שלחי קוד חדש');
       err.status = 400;
       throw err;
     }
     row.attempts += 1;
     if (row.attempts > 8) {
-      codes.delete(to);
+      await clearPendingOtp('sms', to);
       const err = new Error('יותר מדי ניסיונות. שלחי קוד חדש');
       err.status = 400;
       throw err;
     }
     if (row.hash !== hashCode(to, code)) {
+      await savePendingOtp('sms', to, row);
       const err = new Error('הקוד שגוי');
       err.status = 400;
       throw err;
     }
-    codes.delete(to);
+    await clearPendingOtp('sms', to);
     return to;
   }
 
