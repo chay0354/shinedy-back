@@ -252,7 +252,6 @@ app.post('/api/auth/login', async (req, res) => {
       const { session: authSession } = await session.loginUser({ email, password });
       req.headers.authorization = `Bearer ${authSession.access_token}`;
       const snapshot = await session.withRequest(req, () => store.getSnapshot());
-      const pending = await sendVerifyIfNeeded(snapshot);
       res.json({
         session: {
           access_token: authSession.access_token,
@@ -260,7 +259,6 @@ app.post('/api/auth/login', async (req, res) => {
           expires_at: authSession.expires_at,
         },
         ...snapshot,
-        ...pending,
       });
       return;
     }
