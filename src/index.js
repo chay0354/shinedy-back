@@ -194,7 +194,13 @@ app.post('/api/auth/register', async (req, res) => {
         const st = store.getMutableState();
         st.address = address;
         if (st.registration) st.registration.address = address;
-        if (req.body?.planId) store.subscribe(req.body.planId);
+        if (req.body?.planId) {
+          try {
+            store.subscribe(req.body.planId);
+          } catch (planErr) {
+            console.error('subscribe during register:', planErr?.message || planErr);
+          }
+        }
         if (req.body?.payment) {
           st.payment = {
             holder: String(req.body.payment.holder || '').trim(),
@@ -211,6 +217,15 @@ app.post('/api/auth/register', async (req, res) => {
         }
         return store.getSnapshot();
       });
+      if (req.body?.planId) {
+        try {
+          const savedPlan = await db.saveSubscription(user.id, req.body.planId);
+          if (savedPlan) snapshot.planId = savedPlan;
+          snapshot.subscribed = true;
+        } catch (planErr) {
+          console.error('saveSubscription during register:', planErr?.message || planErr);
+        }
+      }
       const pending = await sendVerifyIfNeeded(snapshot);
       res.json({
         session: {

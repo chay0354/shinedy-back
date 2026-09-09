@@ -514,6 +514,39 @@ export async function getUserRole(userId) {
   return resolveUserRole(profile);
 }
 
+const PLAN_ALIASES = {
+  silver: 'essentials',
+  combined: 'signature',
+  gold: 'prestige',
+  essentials: 'silver',
+  signature: 'combined',
+  prestige: 'gold',
+};
+
+export async function saveSubscription(userId, planId) {
+  const raw = String(planId || '').trim();
+  if (!userId || !raw) return null;
+  const { data: plans, error: plansError } = await getSupabase().from('plans').select('id, points');
+  if (plansError) throw plansError;
+  const plan =
+    (plans || []).find((p) => p.id === raw) ||
+    (plans || []).find((p) => p.id === PLAN_ALIASES[raw]) ||
+    null;
+  if (!plan) throw new Error('המסלול לא נמצא');
+  const { error } = await getSupabase()
+    .from('profiles')
+    .update({
+      subscribed: true,
+      plan_id: plan.id,
+      points_balance: plan.points ?? 0,
+      subscribed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', userId);
+  if (error) throw error;
+  return plan.id;
+}
+
 export async function ensureAdminByEmail(userId, email) {
   if ((email || '').trim().toLowerCase() !== adminEmail()) return false;
 
