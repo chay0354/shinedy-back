@@ -136,7 +136,7 @@ export async function loadStaffCustomers() {
   const { data, error } = await admin
     .from('profiles')
     .select(
-      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, suspended_at, points_balance',
+      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, points_balance',
     )
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -395,7 +395,6 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     privacy_accepted_at: state.registration?.privacyAcceptedAt || null,
     notices_accepted_at: state.registration?.noticesAcceptedAt || null,
     signup_ip: state.registration?.signupIp || null,
-    suspended_at: state.registration?.suspendedAt || null,
     updated_at: new Date().toISOString(),
   };
 
