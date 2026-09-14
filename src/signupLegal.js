@@ -33,11 +33,15 @@ export function parseSignupLegal(body = {}) {
   }
   if (!body.noticesAccepted) fail('יש לאשר קבלת הודעות תפעוליות על המנוי');
 
+  const planId = String(body.planId || '').trim();
+  const needsSignature = planId !== 'silver' && planId !== 'essentials';
   const signatureData = String(body.signatureData || '');
-  if (!signatureData.startsWith('data:image/') || signatureData.length < 4000) {
-    fail('יש לחתום בשדה החתימה');
+  if (needsSignature) {
+    if (!signatureData.startsWith('data:image/') || signatureData.length < 4000) {
+      fail('יש לחתום בשדה החתימה');
+    }
+    if (signatureData.length > 800_000) fail('החתימה גדולה מדי');
   }
-  if (signatureData.length > 800_000) fail('החתימה גדולה מדי');
 
   const idDocumentUrl = String(body.idDocumentUrl || '');
   const okDoc =
@@ -50,9 +54,9 @@ export function parseSignupLegal(body = {}) {
   const now = new Date().toISOString();
   return {
     nationalId,
-    signatureData,
+    signatureData: needsSignature ? signatureData : null,
     idDocumentUrl,
-    signatureCompleted: true,
+    signatureCompleted: needsSignature,
     termsAcceptedAt: now,
     privacyAcceptedAt: now,
     noticesAcceptedAt: now,
