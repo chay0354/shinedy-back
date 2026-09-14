@@ -131,15 +131,47 @@ export async function loadCatalogIntoState(state) {
   return { seedOrders, seedPouches };
 }
 
+const STAFF_CUSTOMER_COLS = [
+  'id',
+  'email',
+  'full_name',
+  'phone',
+  'role',
+  'plan_id',
+  'subscribed',
+  'subscribed_at',
+  'suspended_at',
+  'created_at',
+  'address',
+  'national_id',
+  'signature_completed',
+  'terms_accepted_at',
+  'id_document_url',
+  'points_balance',
+];
+
+async function selectStaffProfiles(cols) {
+  return getSupabase()
+    .from('profiles')
+    .select(cols.join(', '))
+    .order('created_at', { ascending: false });
+}
+
+let cachedStaffCols = STAFF_CUSTOMER_COLS.slice();
+
 export async function loadStaffCustomers(viewerRole = 'admin') {
   const admin = getSupabase();
   if (!admin) return [];
-  const { data, error } = await admin
-    .from('profiles')
-    .select(
-      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, suspended_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, points_balance',
-    )
-    .order('created_at', { ascending: false });
+  let cols = cachedStaffCols.slice();
+  let { data, error } = await selectStaffProfiles(cols);
+  while (error && cols.length > 1) {
+    const msg = `${error.message || ''} ${error.details || ''}`;
+    const missing = cols.find((c) => c !== 'id' && msg.includes(c));
+    if (!missing) throw error;
+    cols = cols.filter((c) => c !== missing);
+    cachedStaffCols = cols.slice();
+    ({ data, error } = await selectStaffProfiles(cols));
+  }
   if (error) throw error;
   return (data || [])
     .filter((row) => resolveUserRole(row) === 'customer')
@@ -625,28 +657,54 @@ function persistItemIds(items) {
     .filter(Boolean);
 }
 
+function orderRow(o) {
+  return {
+    id: o.id,
+    user_id: o.userId || null,
+    type: o.type,
+    customer_name: o.customerName,
+    items: persistItemIds(o.items),
+    return_items: persistItemIds(o.returnItems),
+    new_items: o.newItems || [],
+    status: o.status,
+    order_date: o.date,
+    qr: o.qr,
+    pouch_id: o.pouchId,
+    courier_confirmed_at: o.courierConfirmedAt || null,
+  };
+}
+
+export async function persistOrder(order) {
+  if (!order?.id) return;
+  await upsertRow(getSupabase(), 'orders', orderRow(order), OPTIONAL_ORDER_COLS);
+}
+
+export async function persistUnits(units) {
+  const rows = (units || [])
+    .filter((u) => u && u.id && !u.demoOnly)
+    .map((u) => ({
+      id: u.id,
+      model_id: u.modelId,
+      status: u.status,
+      demo_only: false,
+      owner_user_id: u.ownerUserId || null,
+    }));
+  if (!rows.length) return;
+  const { error } = await getSupabase().from('units').upsert(rows);
+  if (error) throw error;
+}
+
+export async function persistOrderAndUnits(state, order) {
+  if (!order) return;
+  await persistOrder(order);
+  const ids = new Set([...persistItemIds(order.items), ...persistItemIds(order.returnItems)]);
+  await persistUnits((state.units || []).filter((u) => ids.has(u.id)));
+}
+
 export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   // Orders first so a later catalog upsert cannot drop a warehouse advance.
   for (const o of seedOrders) {
-    await upsertRow(
-      getSupabase(),
-      'orders',
-      {
-        id: o.id,
-        user_id: o.userId || null,
-        type: o.type,
-        customer_name: o.customerName,
-        items: persistItemIds(o.items),
-        return_items: persistItemIds(o.returnItems),
-        new_items: o.newItems || [],
-        status: o.status,
-        order_date: o.date,
-        qr: o.qr,
-        pouch_id: o.pouchId,
-        courier_confirmed_at: o.courierConfirmedAt || null,
-      },
-      OPTIONAL_ORDER_COLS,
-    );
+    await persistOrder(o);
   }
 
   for (const p of seedPouches) {

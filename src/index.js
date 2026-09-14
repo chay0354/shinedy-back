@@ -388,7 +388,12 @@ app.post('/api/purchase', wrap((req) => store.purchaseItem(req.body || {}), { au
 
 app.post(
   '/api/purchases/:id/shipped',
-  wrap((req) => store.markPurchaseShipped(req.params.id), { staff: true, staffRoles: ['admin', 'warehouse'] }),
+  wrap((req) => store.markPurchaseShipped(req.params.id), {
+    staff: true,
+    staffRoles: ['admin', 'warehouse'],
+    skipStaffCustomers: true,
+    persist: 'order',
+  }),
 );
 
 app.post('/api/subscribe/cancel', wrap(() => store.cancelSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
@@ -460,7 +465,12 @@ app.patch(
 
 app.post(
   '/api/warehouse/orders/:id/advance',
-  wrap((req) => store.advanceOrder(req.params.id), { staff: true, staffRoles: ['admin', 'warehouse'] }),
+  wrap((req) => store.advanceOrder(req.params.id), {
+    staff: true,
+    staffRoles: ['admin', 'warehouse'],
+    skipStaffCustomers: true,
+    persist: 'order',
+  }),
 );
 
 app.post(

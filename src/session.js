@@ -39,7 +39,7 @@ async function requireStaffAccess(req, staffRoles = ['admin']) {
     err.status = 403;
     throw err;
   }
-  return user;
+  return { user, role };
 }
 
 function rejectStaffFromCustomerRoute() {
@@ -61,21 +61,32 @@ async function refreshSeedFromDb() {
   seedPouches = fresh.seedPouches;
 }
 
-async function hydrateForRequest(req, { auth = false, staff = false, staffRoles = ['admin'], customerOnly = false } = {}) {
+async function hydrateForRequest(req, opts = {}) {
+  const { auth = false, staff = false, staffRoles = ['admin'], customerOnly = false } = opts;
   await initDbIfNeeded();
   if (!isDbEnabled) return null;
 
   if (staff) {
-    const staffUser = await requireStaffAccess(req, staffRoles);
-    await refreshSeedFromDb();
+    const { user: staffUser, role } = await requireStaffAccess(req, staffRoles);
+    const orderId = req.params?.id;
+    const haveOrder = orderId && store.getMutableState().orders?.some((o) => o.id === orderId);
+    if (!(opts.persist === 'order' && haveOrder)) {
+      await refreshSeedFromDb();
+    }
     store.clearUserSession();
     const st = store.getMutableState();
     st.currentUserId = staffUser.id;
-    st.currentUserRole = await db.getUserRole(staffUser.id);
+    st.currentUserRole = role;
     st.currentUserName = staffUser.email || 'צוות';
     store.mergeOrders(seedOrders);
     store.mergePouches(seedPouches);
-    store.getMutableState().staffCustomers = await db.loadStaffCustomers(st.currentUserRole);
+    if (!opts.skipStaffCustomers) {
+      try {
+        store.getMutableState().staffCustomers = await db.loadStaffCustomers(role);
+      } catch (e) {
+        console.error('loadStaffCustomers:', e?.message || e);
+      }
+    }
     return null;
   }
 
@@ -125,13 +136,19 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
   return null;
 }
 
-async function persistAfterRequest(req, user, staff = false) {
+async function persistAfterRequest(req, user, opts = {}) {
   if (!isDbEnabled) return;
+  const staff = opts.staff;
 
   if (staff) {
     const st = store.getMutableState();
     seedOrders = st.orders;
     seedPouches = st.returnPouches;
+    if (opts.persist === 'order') {
+      const order = st.orders.find((o) => o.id === req.params?.id);
+      await db.persistOrderAndUnits(st, order);
+      return;
+    }
     await db.persistGlobalCatalog(st, seedOrders, seedPouches);
     return;
   }
@@ -187,7 +204,7 @@ export async function withRequest(req, fn, opts = {}) {
     const result = await fn();
     if (!opts.skipPersist) {
       try {
-        await persistAfterRequest(req, user, opts.staff);
+        await persistAfterRequest(req, user, opts);
       } catch (e) {
         console.error('persistAfterRequest:', e?.message || e);
       }
