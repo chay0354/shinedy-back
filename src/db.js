@@ -15,14 +15,22 @@ async function upsertRow(client, table, row, optionalCols = []) {
   if (retryError) throw retryError;
 }
 
-function adminEmail() {
-  return (process.env.ADMIN_EMAIL || 'admin@gmail.com').trim().toLowerCase();
+const DEFAULT_ADMIN_EMAILS = ['admin@gmail.com', 'office@shinedy.co'];
+
+export function adminEmails() {
+  const fromEnv = [process.env.ADMIN_EMAIL, process.env.ADMIN_EMAILS]
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set([...DEFAULT_ADMIN_EMAILS, ...fromEnv])];
+}
+
+export function isAdminEmail(email) {
+  return adminEmails().includes(String(email || '').trim().toLowerCase());
 }
 
 export function resolveUserRole(profile) {
-  if ((profile?.email || '').trim().toLowerCase() === adminEmail()) {
-    return 'admin';
-  }
+  if (isAdminEmail(profile?.email)) return 'admin';
   return profile?.role || 'customer';
 }
 
@@ -548,7 +556,7 @@ export async function saveSubscription(userId, planId) {
 }
 
 export async function ensureAdminByEmail(userId, email) {
-  if ((email || '').trim().toLowerCase() !== adminEmail()) return false;
+  if (!isAdminEmail(email)) return false;
 
   const patch = {
     subscribed: false,

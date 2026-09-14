@@ -266,7 +266,9 @@ app.post('/api/auth/login', async (req, res) => {
       if (!email || !password) throw new Error('חסרים אימייל או סיסמה');
       const { session: authSession } = await session.loginUser({ email, password });
       req.headers.authorization = `Bearer ${authSession.access_token}`;
-      const snapshot = await session.withRequest(req, () => store.getSnapshot());
+      const snapshot = await session.withRequest(req, () => store.getSnapshot(), {
+        skipPersist: true,
+      });
       res.json({
         session: {
           access_token: authSession.access_token,

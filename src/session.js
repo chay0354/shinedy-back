@@ -162,7 +162,9 @@ export async function withRequest(req, fn, opts = {}) {
   const run = requestQueue.then(async () => {
     const user = await hydrateForRequest(req, opts);
     const result = await fn();
-    await persistAfterRequest(req, user, opts.staff);
+    if (!opts.skipPersist) {
+      await persistAfterRequest(req, user, opts.staff);
+    }
     return result;
   });
   requestQueue = run.then(
@@ -297,7 +299,7 @@ export async function loginUser({ email, password }) {
   if (!authClient) throw new Error('Auth client not configured');
   const { data, error } = await authClient.auth.signInWithPassword({ email, password });
   if (error) throw error;
-  await db.ensureAdminByEmail(data.user.id, email);
+  await db.ensureAdminByEmail(data.user.id, data.user.email || email);
   return { user: data.user, session: data.session };
 }
 
