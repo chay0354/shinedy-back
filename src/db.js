@@ -619,7 +619,61 @@ export async function ensureAdminByEmail(userId, email) {
   return true;
 }
 
+function persistItemIds(items) {
+  return (items || [])
+    .map((it) => (typeof it === 'string' ? it : it?.id || it?.serial || it?.unitId))
+    .filter(Boolean);
+}
+
 export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
+  // Orders first so a later catalog upsert cannot drop a warehouse advance.
+  for (const o of seedOrders) {
+    await upsertRow(
+      getSupabase(),
+      'orders',
+      {
+        id: o.id,
+        user_id: o.userId || null,
+        type: o.type,
+        customer_name: o.customerName,
+        items: persistItemIds(o.items),
+        return_items: persistItemIds(o.returnItems),
+        new_items: o.newItems || [],
+        status: o.status,
+        order_date: o.date,
+        qr: o.qr,
+        pouch_id: o.pouchId,
+        courier_confirmed_at: o.courierConfirmedAt || null,
+      },
+      OPTIONAL_ORDER_COLS,
+    );
+  }
+
+  for (const p of seedPouches) {
+    await upsertRow(
+      getSupabase(),
+      'return_pouches',
+      {
+        id: p.id,
+        user_id: p.userId || null,
+        qr: p.qr,
+        order_id: p.orderId,
+        customer_name: p.customerName,
+        return_items: persistItemIds(p.returnItems),
+        new_items: p.newItems || [],
+        status: p.status,
+        scanned: p.scanned,
+        created_at_label: p.createdAt,
+        courier_confirmed_at: p.courierConfirmedAt || null,
+        demo_customer: p.demoCustomer ?? false,
+        pending_points: p.pendingPoints ?? 0,
+        points_credited: p.pointsCredited ?? false,
+        inventory_cleared: p.inventoryCleared ?? false,
+      },
+      OPTIONAL_POUCH_COLS,
+    );
+  }
+
   for (const p of state.products) {
     const { error } = await getSupabase().from('products').upsert({
       id: p.id,
@@ -642,53 +696,6 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
       owner_user_id: u.ownerUserId || null,
     });
     if (error) throw error;
-  }
-
-  for (const o of seedOrders) {
-    await upsertRow(
-      getSupabase(),
-      'orders',
-      {
-        id: o.id,
-        user_id: o.userId || null,
-        type: o.type,
-        customer_name: o.customerName,
-        items: o.items,
-        return_items: o.returnItems || [],
-        new_items: o.newItems || [],
-        status: o.status,
-        order_date: o.date,
-        qr: o.qr,
-        pouch_id: o.pouchId,
-        courier_confirmed_at: o.courierConfirmedAt || null,
-      },
-      OPTIONAL_ORDER_COLS,
-    );
-  }
-
-  for (const p of seedPouches) {
-    await upsertRow(
-      getSupabase(),
-      'return_pouches',
-      {
-        id: p.id,
-        user_id: p.userId || null,
-        qr: p.qr,
-        order_id: p.orderId,
-        customer_name: p.customerName,
-        return_items: p.returnItems,
-        new_items: p.newItems || [],
-        status: p.status,
-        scanned: p.scanned,
-        created_at_label: p.createdAt,
-        courier_confirmed_at: p.courierConfirmedAt || null,
-        demo_customer: p.demoCustomer ?? false,
-        pending_points: p.pendingPoints ?? 0,
-        points_credited: p.pointsCredited ?? false,
-        inventory_cleared: p.inventoryCleared ?? false,
-      },
-      OPTIONAL_POUCH_COLS,
-    );
   }
 
   for (const p of state.plans) {

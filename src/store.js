@@ -8,6 +8,28 @@ function maskNationalIdForClient(value) {
 
 const STATUSES = ['זמין', 'שמור', 'אצל לקוחה', 'בניקוי', 'בתיקון', 'בדרך ללקוחה', 'בדרך חזרה', 'נמכר'];
 const STAGES = ['ליקוט', 'בקרה', 'אריזה', 'נשלח'];
+const STAGE_ALIASES = {
+  חדשה: 'ליקוט',
+  בליקוט: 'ליקוט',
+  ליקוט: 'ליקוט',
+  בקרה: 'בקרה',
+  נארזה: 'אריזה',
+  אריזה: 'אריזה',
+  נשלח: 'נשלח',
+  נשלחה: 'נשלח',
+};
+
+function normalizeFulfillmentStatus(status) {
+  return STAGE_ALIASES[String(status || '').trim()] || String(status || '').trim();
+}
+
+function orderOwnsUnit(order, unitId) {
+  return (order?.items || []).some((it) => {
+    if (it === unitId) return true;
+    if (it && typeof it === 'object') return it.id === unitId || it.serial === unitId;
+    return false;
+  });
+}
 const CREDIT_PCT = 10;
 const DAY_MS = 86400000;
 
@@ -720,14 +742,17 @@ export function getSnapshot() {
             key: st,
             label: stageLabels[st],
             orders: state.orders
-              .filter((o) => o.status === st)
-              .map((o) => ({ ...decorateOrder(o), nextLabel: nextLabels[o.status] })),
+              .filter((o) => normalizeFulfillmentStatus(o.status) === st)
+              .map((o) => ({
+                ...decorateOrder(o),
+                nextLabel: nextLabels[normalizeFulfillmentStatus(o.status)],
+              })),
           }));
           cols.push({
             key: 'נשלח',
             label: 'הושלם ונשלח',
             orders: state.orders
-              .filter((o) => o.status === 'נשלח')
+              .filter((o) => normalizeFulfillmentStatus(o.status) === 'נשלח')
               .map((o) => ({ ...decorateOrder(o), nextLabel: 'נשלח ✓' })),
           });
           return cols;
@@ -1621,8 +1646,14 @@ function stampCourierHandover(order, at = new Date().toISOString()) {
 export function advanceOrder(orderId) {
   const order = state.orders.find((o) => o.id === orderId);
   if (!order) throw new Error('ההזמנה לא נמצאה');
-  const idx = STAGES.indexOf(order.status);
-  if (idx < 0 || idx >= STAGES.length - 1) return getSnapshot();
+  const currentStatus = normalizeFulfillmentStatus(order.status);
+  const idx = STAGES.indexOf(currentStatus);
+  if (idx < 0) {
+    throw new Error('לא ניתן לקדם את ההזמנה מהסטטוס הנוכחי');
+  }
+  if (idx >= STAGES.length - 1) {
+    throw new Error('ההזמנה כבר נשלחה');
+  }
   const next = STAGES[idx + 1];
   state.orders = state.orders.map((o) =>
     o.id === orderId ? { ...o, status: next } : o,
@@ -1636,7 +1667,7 @@ export function advanceOrder(orderId) {
         : o,
     );
     state.units = state.units.map((u) =>
-      order.items.includes(u.id) ? { ...u, status: 'אצל לקוחה' } : u,
+      orderOwnsUnit(order, u.id) ? { ...u, status: 'אצל לקוחה' } : u,
     );
     return getSnapshot();
   }
