@@ -101,10 +101,14 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
     }
     const role = store.getMutableState().currentUserRole;
     if (role === 'admin' || role === 'warehouse') {
-      await refreshSeedFromDb();
-      store.mergeOrders(seedOrders);
-      store.mergePouches(seedPouches);
-      store.getMutableState().staffCustomers = await db.loadStaffCustomers(role);
+      try {
+        await refreshSeedFromDb();
+        store.mergeOrders(seedOrders);
+        store.mergePouches(seedPouches);
+        store.getMutableState().staffCustomers = await db.loadStaffCustomers(role);
+      } catch (e) {
+        console.error('staff hydrate:', e?.message || e);
+      }
     } else {
       store.mergeOrders([...seedOrders, ...session.userOrders]);
       store.mergePouches([...seedPouches, ...session.userPouches]);
@@ -324,7 +328,11 @@ export async function loginUser({ email, password }) {
   if (!authClient) throw new Error('ההתחברות לא זמינה כרגע. נסי שוב בעוד רגע');
   const { data, error } = await authClient.auth.signInWithPassword({ email, password });
   if (error) throwHe(error, 401, 'אימייל או סיסמה שגויים');
-  await db.ensureAdminByEmail(data.user.id, data.user.email || email);
+  try {
+    await db.ensureAdminByEmail(data.user.id, data.user.email || email);
+  } catch (e) {
+    console.error('ensureAdminByEmail:', e?.message || e);
+  }
   return { user: data.user, session: data.session };
 }
 

@@ -273,7 +273,9 @@ app.post('/api/auth/login', async (req, res) => {
     const snapshot = await session.withRequest(req, () => store.login());
     res.json(snapshot);
   } catch (e) {
-    res.status(e.status || 400).json({ error: heError(e.message, 'אימייל או סיסמה שגויים') });
+    if (!e.status || e.status >= 500) console.error('login:', e.message || e);
+    const fallback = e.status === 401 ? 'אימייל או סיסמה שגויים' : 'ההתחברות נכשלה. נסי שוב';
+    res.status(e.status || 400).json({ error: heError(e.message, fallback) });
   }
 });
 
