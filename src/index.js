@@ -125,7 +125,7 @@ app.get('/api/health/db', async (_req, res) => {
   res.status(result.ok ? 200 : 503).json(result);
 });
 
-app.get('/api/state', wrap(() => store.getSnapshot()));
+app.get('/api/state', wrap(() => store.getSnapshot(), { skipPersist: true }));
 
 app.post('/api/contact', async (req, res) => {
   try {

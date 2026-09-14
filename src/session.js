@@ -89,7 +89,16 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
   }
 
   if (user) {
-    const session = await db.loadUserSession(user.id, store.getMutableState());
+    let session;
+    try {
+      session = await db.loadUserSession(user.id, store.getMutableState());
+    } catch (e) {
+      console.error('loadUserSession:', e?.message || e);
+      store.clearUserSession();
+      store.mergeOrders(seedOrders);
+      store.mergePouches(seedPouches);
+      return null;
+    }
     const role = store.getMutableState().currentUserRole;
     if (role === 'admin' || role === 'warehouse') {
       await refreshSeedFromDb();
@@ -173,7 +182,11 @@ export async function withRequest(req, fn, opts = {}) {
     const user = await hydrateForRequest(req, opts);
     const result = await fn();
     if (!opts.skipPersist) {
-      await persistAfterRequest(req, user, opts.staff);
+      try {
+        await persistAfterRequest(req, user, opts.staff);
+      } catch (e) {
+        console.error('persistAfterRequest:', e?.message || e);
+      }
     }
     return result;
   });
