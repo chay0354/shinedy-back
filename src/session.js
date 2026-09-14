@@ -2,6 +2,14 @@ import { getUserFromToken, isDbEnabled } from './supabase.js';
 import * as db from './db.js';
 import * as store from './store.js';
 import { signupConflictError } from './contactIdentity.js';
+import { heError } from './heError.js';
+import { ensureIdVault, migrateLegacyIdDocuments, uploadIdDocument } from './idVault.js';
+
+function throwHe(error, status = 400, fallback) {
+  const err = new Error(heError(error?.message || error, fallback));
+  err.status = error?.status || status;
+  throw err;
+}
 
 let seedOrders = [];
 let seedPouches = [];
@@ -9,6 +17,8 @@ let dbReady = false;
 
 export async function initDbIfNeeded() {
   if (!isDbEnabled || dbReady) return;
+  await ensureIdVault().catch((e) => console.error('id vault init:', e?.message || e));
+  await migrateLegacyIdDocuments().catch((e) => console.error('id vault migrate:', e?.message || e));
   const result = await db.loadCatalogIntoState(store.getMutableState());
   seedOrders = result.seedOrders;
   seedPouches = result.seedPouches;
@@ -65,7 +75,7 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
     st.currentUserName = staffUser.email || 'צוות';
     store.mergeOrders(seedOrders);
     store.mergePouches(seedPouches);
-    store.getMutableState().staffCustomers = await db.loadStaffCustomers();
+    store.getMutableState().staffCustomers = await db.loadStaffCustomers(st.currentUserRole);
     return null;
   }
 
@@ -85,7 +95,7 @@ async function hydrateForRequest(req, { auth = false, staff = false, staffRoles 
       await refreshSeedFromDb();
       store.mergeOrders(seedOrders);
       store.mergePouches(seedPouches);
-      store.getMutableState().staffCustomers = await db.loadStaffCustomers();
+      store.getMutableState().staffCustomers = await db.loadStaffCustomers(role);
     } else {
       store.mergeOrders([...seedOrders, ...session.userOrders]);
       store.mergePouches([...seedPouches, ...session.userPouches]);
@@ -129,7 +139,7 @@ async function persistAfterRequest(req, user, staff = false) {
           email_verified: reg.emailVerified ?? false,
           signature_completed: reg.signatureCompleted ?? false,
           payment_method_added: reg.paymentMethodAdded ?? false,
-          national_id: reg.nationalId,
+          ...(reg.nationalId ? { national_id: reg.nationalId } : {}),
           terms_accepted_at: reg.termsAcceptedAt,
           privacy_accepted_at: reg.privacyAcceptedAt,
           notices_accepted_at: reg.noticesAcceptedAt,
@@ -176,11 +186,11 @@ export async function withRequest(req, fn, opts = {}) {
 
 export async function deleteAllUsers() {
   if (!isDbEnabled) {
-    throw new Error('Database mode required');
+    throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
   }
   const { getSupabase } = await import('./supabase.js');
   const supabase = getSupabase();
-  if (!supabase) throw new Error('Supabase not configured');
+  if (!supabase) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
 
   let deleted = 0;
   let page = 1;
@@ -219,7 +229,7 @@ export async function registerUser({
   signupIp,
 }) {
   if (!isDbEnabled) {
-    throw new Error('Database mode required for registration');
+    throw new Error('ההרשמה לא זמינה כרגע. נסי שוב בעוד רגע');
   }
   const { getSupabase } = await import('./supabase.js');
   const supabase = getSupabase();
@@ -246,9 +256,10 @@ export async function registerUser({
       err.status = 400;
       throw err;
     }
-    throw error;
+    throwHe(error);
   }
 
+  const storedDoc = idDocumentUrl ? await uploadIdDocument(data.user.id, idDocumentUrl) : null;
   const legalPatch = {
     full_name: fullName,
     email,
@@ -257,7 +268,7 @@ export async function registerUser({
     credits: 0,
     registration_step: 7,
     national_id: nationalId || null,
-    id_document_url: idDocumentUrl || null,
+    id_document_url: storedDoc,
     signature_data: signatureData || null,
     signature_completed: signatureCompleted ?? false,
     terms_accepted_at: termsAcceptedAt || null,
@@ -276,16 +287,17 @@ export async function registerUser({
     await db.saveSignupLegal(data.user.id, legalPatch);
   } catch (legalErr) {
     console.error('saveSignupLegal after register:', legalErr?.message || legalErr);
+    throwHe(legalErr, 502, 'שמירת פרטי האימות נכשלה. נסי שוב');
   }
 
   const { getAuthClient } = await import('./supabase.js');
   const authClient = getAuthClient();
-  if (!authClient) throw new Error('Auth client not configured');
+  if (!authClient) throw new Error('ההתחברות לא זמינה כרגע. נסי שוב בעוד רגע');
   const { data: signIn, error: signInError } = await authClient.auth.signInWithPassword({
     email,
     password,
   });
-  if (signInError) throw signInError;
+  if (signInError) throwHe(signInError);
 
   return { user: data.user, session: signIn.session };
 }
@@ -296,9 +308,9 @@ export async function loginUser({ email, password }) {
   }
   const { getAuthClient } = await import('./supabase.js');
   const authClient = getAuthClient();
-  if (!authClient) throw new Error('Auth client not configured');
+  if (!authClient) throw new Error('ההתחברות לא זמינה כרגע. נסי שוב בעוד רגע');
   const { data, error } = await authClient.auth.signInWithPassword({ email, password });
-  if (error) throw error;
+  if (error) throwHe(error, 401, 'אימייל או סיסמה שגויים');
   await db.ensureAdminByEmail(data.user.id, data.user.email || email);
   return { user: data.user, session: data.session };
 }

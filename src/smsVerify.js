@@ -80,9 +80,7 @@ async function sendViaSender(to, code) {
     const unverified = last.data?.code === 21608 || /unverified/i.test(String(last.data?.message || ''));
     if (!unverified) break;
   }
-  const err = new Error(
-    last?.data?.message || 'שליחת ה-SMS נכשלה. בדקי את המספר, A2P, וחשבון Twilio.',
-  );
+  const err = new Error('שליחת ה-SMS נכשלה. בדקי את המספר ונסי שוב.');
   err.status = 502;
   throw err;
 }
@@ -108,7 +106,7 @@ async function sendViaVerify(to) {
     const unverified = last.data?.code === 21608 || /unverified/i.test(String(last.data?.message || ''));
     if (!unverified) break;
   }
-  const err = new Error(last?.data?.message || 'שליחת ה-SMS נכשלה.');
+  const err = new Error('שליחת ה-SMS נכשלה.');
   err.status = 502;
   throw err;
 }
@@ -192,7 +190,7 @@ export async function checkSmsCode(phone, rawCode) {
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || data.status !== 'approved') {
-    const err = new Error(data?.message || 'הקוד שגוי או שפג תוקפו');
+    const err = new Error('הקוד שגוי או שפג תוקפו');
     err.status = 400;
     throw err;
   }

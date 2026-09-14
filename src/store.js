@@ -1,4 +1,10 @@
 import { isDbEnabled } from './supabase.js';
+import { attachCourierJob, planRequiresDeliverySignature, resolveCourierJob } from './courierJob.js';
+import { hasIdDocument, maskNationalId } from './idVault.js';
+
+function maskNationalIdForClient(value) {
+  return maskNationalId(value);
+}
 
 const STATUSES = ['זמין', 'שמור', 'אצל לקוחה', 'בניקוי', 'בתיקון', 'בדרך ללקוחה', 'בדרך חזרה', 'נמכר'];
 const STAGES = ['ליקוט', 'בקרה', 'אריזה', 'נשלח'];
@@ -24,6 +30,17 @@ const PLAN_ALIASES = {
   signature: 'combined',
   prestige: 'gold',
 };
+
+export function normalizePayment(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const last4 = String(raw.last4 || '').replace(/\D/g, '').slice(-4);
+  if (last4.length < 4) return null;
+  return {
+    holder: String(raw.holder || '').trim(),
+    last4,
+    expiry: String(raw.expiry || '').trim(),
+  };
+}
 
 function resolvePlan(planId) {
   if (!planId) return null;
@@ -88,7 +105,7 @@ function makeInitialState() {
       demoOnly: false,
     })),
     orders: [
-      { id: 'ORD-1041', type: 'הזמנה', customerName: 'נועה כהן', items: ['N08-3'], status: 'אריזה', date: 'לפני 2 ימים' },
+      { id: 'ORD-1041', type: 'הזמנה ראשונה', customerName: 'נועה כהן', items: ['N08-3'], returnItems: [], status: 'אריזה', date: 'לפני 2 ימים', courierJob: 'delivery' },
     ],
     // Return pouches: QR → scan → confirm contents → QC → cleaning/repair
     returnPouches: [
@@ -110,6 +127,7 @@ function makeInitialState() {
     ],
     pouchCounter: 9002,
     lastPouchId: null,
+    shippingCharges: [],
     // Manager fixtures only — not the interactive demo customer
     staffCustomers: [],
     seedCustomers: [
@@ -156,7 +174,8 @@ function decoratePouch(pouch) {
     pendingQc: items.filter((i) => i.status === 'בדרך חזרה'),
     canCancel:
       (pouch.userId === state.currentUserId || pouch.demoCustomer) &&
-      pouch.status === 'in_transit',
+      pouch.status === 'in_transit' &&
+      !pouch.endReason,
   };
 }
 
@@ -202,6 +221,7 @@ export function clearUserSession() {
   state.subscribedAt = null;
   state.address = {};
   state.payment = null;
+  state.shippingCharges = [];
   state.units = state.units.filter((u) => !u.demoOnly && !u.ownerUserId);
 }
 
@@ -379,15 +399,20 @@ function decorateProduct(p, budget, cartArr) {
 }
 
 function decorateOrder(o) {
-  return {
-    ...o,
-    itemsLabel: o.items
-      .map((uid) => {
-        const u = unit(uid);
-        return u ? product(u.modelId).name : uid;
-      })
-      .join(', '),
-  };
+  const courierJob = resolveCourierJob(o);
+  return attachCourierJob(
+    {
+      ...o,
+      itemsLabel: (o.items || [])
+        .map((uid) => {
+          const u = unit(uid);
+          return u ? product(u.modelId).name : uid;
+        })
+        .join(', '),
+    },
+    courierJob,
+    courierOpts(o.planId),
+  );
 }
 
 const CUSTOMER_ORDER_STATUS = {
@@ -467,8 +492,10 @@ function hasOpenReturn() {
 
 function decorateCustomerOrder(o) {
   const base = decorateOrder(o);
-  const isPurchase = o.type === 'הזמנה';
-  const isActive = isPurchase ? o.status !== 'נשלח' : o.status === 'בדרך חזרה';
+  const outbound = ['הזמנה', 'הזמנה ראשונה', 'החלפה', 'רכישה'].includes(o.type || 'הזמנה');
+  const isActive = outbound
+    ? !['נשלח', 'נשלחה', 'נמסרה'].includes(o.status)
+    : !['נשלח', 'נשלחה', 'הושלמה'].includes(o.status);
   const itemsDetail = (o.items || []).map((uid) => {
     const u = unit(uid);
     const p = u ? product(u.modelId) : null;
@@ -500,6 +527,13 @@ function currentPlan() {
     : { name: '—', price: 0, points: 0 };
 }
 
+function courierOpts(planId = state.planId) {
+  return {
+    planId: planId || null,
+    deliverySignatureRequired: planRequiresDeliverySignature(planId),
+  };
+}
+
 export function getSnapshot() {
   pruneMyItems();
   reconcileCustomerUnits();
@@ -528,15 +562,16 @@ export function getSnapshot() {
           ...state.registration,
           name: state.registration.name || state.registration.fullName || state.currentUserName,
           address: state.address || state.registration.address || {},
-          payment: state.payment || state.registration.payment || null,
+          payment: normalizePayment(state.payment || state.registration.payment),
           subscribedAt: state.subscribedAt,
           idDocumentUploaded: Boolean(
-            state.registration.idDocumentUrl &&
-              String(state.registration.idDocumentUrl).startsWith('data:'),
+            state.registration.idDocumentUploaded || hasIdDocument(state.registration.idDocumentUrl),
           ),
           signatureCompleted: Boolean(state.registration.signatureCompleted),
-          nationalId: state.registration.nationalId || '',
+          nationalId: maskNationalIdForClient(state.registration.nationalId),
           termsAcceptedAt: state.registration.termsAcceptedAt || null,
+          canceledAt: state.registration.canceledAt || state.address?.canceledAt || null,
+          shippingCharges: state.shippingCharges || state.registration.shippingCharges || state.address?.shippingCharges || [],
           idDocumentUrl: undefined,
           signatureData: undefined,
         }
@@ -560,6 +595,10 @@ export function getSnapshot() {
     plans: state.plans.map((p) => ({
       ...p,
       shippingLabel: p.shipping ? 'משלוח כלול' : 'משלוח בתשלום',
+      deliverySignatureRequired: planRequiresDeliverySignature(p.id),
+      deliverySignatureLabel: planRequiresDeliverySignature(p.id)
+        ? 'חתימת מסירה נדרשת'
+        : 'ללא חתימת מסירה',
     })),
     products: state.products
       .map((p) => {
@@ -700,6 +739,9 @@ export function getSnapshot() {
     activeReturnPouches: staff
       ? state.returnPouches.filter((p) => p.status !== 'completed').map(decoratePouch)
       : undefined,
+    shippingCharges: state.shippingCharges || state.address?.shippingCharges || [],
+    extraShipFee: EXTRA_SHIP_FEE,
+    payment: normalizePayment(state.payment || state.registration?.payment),
     lastPouch: (() => {
       if (!state.lastPouchId) return null;
       const p = state.returnPouches.find((x) => x.id === state.lastPouchId);
@@ -816,20 +858,180 @@ export function changePlan(planId) {
   return getSnapshot();
 }
 
-export function suspendOwnSubscription() {
-  if (!state.subscribed) throw new Error('אין מנוי פעיל');
-  if (isSuspended()) throw new Error('המנוי כבר מוקפא');
-  if ((state.myItems || []).length > 0) {
-    throw new Error('יש להחזיר את כל התכשיטים לפני הקפאת המנוי');
-  }
+const EXTRA_SHIP_FEE = 65;
+
+function parseWhen(value) {
+  if (!value) return null;
+  const t = Date.parse(value);
+  if (!Number.isNaN(t)) return t;
+  const he = String(value);
+  if (he === 'היום') return Date.now();
+  if (he === 'לפני יום') return Date.now() - DAY_MS;
+  const daysAgo = he.match(/לפני\s+(\d+)\s+ימים/);
+  if (daysAgo) return Date.now() - Number(daysAgo[1]) * DAY_MS;
+  return null;
+}
+
+function billingPeriod(now = Date.now()) {
+  const origin = parseWhen(state.subscribedAt) || now;
+  const idx = Math.max(0, Math.floor((now - origin) / (30 * DAY_MS)));
+  const start = origin + idx * 30 * DAY_MS;
+  return { start, end: start + 30 * DAY_MS };
+}
+
+function hadMovementThisPeriod() {
+  const { start, end } = billingPeriod();
+  const inWindow = (value) => {
+    const t = parseWhen(value);
+    return Boolean(t && t >= start && t < end);
+  };
+  const shipTypes = new Set(['הזמנה', 'הזמנה ראשונה', 'החלפה', 'החזרה']);
+  const orderHit = state.orders.some((o) => {
+    if (!isMyOrder(o)) return false;
+    if (!shipTypes.has(o.type || 'הזמנה')) return false;
+    return inWindow(o.courierConfirmedAt) || inWindow(o.date) || inWindow(o.createdAt);
+  });
+  const pouchHit = state.returnPouches.some((p) => {
+    if (!isMyPouch(p)) return false;
+    return inWindow(p.courierConfirmedAt) || inWindow(p.createdAt);
+  });
+  return orderHit || pouchHit;
+}
+
+function itemsToCollect() {
+  return state.myItems.filter((uid) => {
+    const u = unit(uid);
+    return u && (u.status === 'אצל לקוחה' || u.status === 'בדרך ללקוחה');
+  });
+}
+
+function recordShipFee(reason, relatedOrderId) {
+  const charge = {
+    id: `FEE-${Date.now()}`,
+    amount: EXTRA_SHIP_FEE,
+    reason,
+    at: new Date().toISOString(),
+    relatedOrderId: relatedOrderId || null,
+    periodStart: new Date(billingPeriod().start).toISOString(),
+  };
+  state.shippingCharges = [...(state.shippingCharges || []), charge];
   if (!state.registration) state.registration = {};
-  state.registration.suspendedAt = new Date().toISOString();
-  state.registration.suspended = true;
+  state.registration.shippingCharges = state.shippingCharges;
+  state.address = { ...(state.address || {}), shippingCharges: state.shippingCharges };
+  return charge;
+}
+
+function startEndPickup(endReason) {
+  const existing = state.returnPouches.find((p) => isMyPouch(p) && p.status !== 'completed');
+  if (existing) {
+    existing.endReason = existing.endReason || endReason;
+    return {
+      pickupOrder: state.orders.find((o) => o.id === existing.orderId) || null,
+      collected: [...(existing.returnItems || [])],
+      reused: true,
+    };
+  }
+  const returnItems = itemsToCollect();
+  if (!returnItems.length) return { pickupOrder: null, collected: [], reused: false };
+
+  const createdAt = new Date().toISOString();
+  const orderId = `ORD-${state.orderCounter}${userIdSuffix()}`;
+  const pouchId = `POUCH-${state.pouchCounter}${userIdSuffix()}`;
+  const qr = makeQrCode();
+  for (const uid of returnItems) {
+    const idx = state.units.findIndex((u) => u.id === uid);
+    if (idx > -1) state.units[idx] = { ...state.units[idx], status: 'בדרך חזרה' };
+  }
+  const order = attachCourierJob(
+    {
+      id: orderId,
+      type: 'החזרה',
+      userId: state.currentUserId || null,
+      customerName: state.currentUserName || 'הלקוחה (דמו)',
+      items: [],
+      returnItems,
+      status: 'אריזה',
+      date: createdAt,
+      qr,
+      pouchId,
+      endReason,
+    },
+    'pickup',
+    courierOpts(),
+  );
+  state.orders.push(order);
+  state.returnPouches.push({
+    id: pouchId,
+    userId: state.currentUserId || null,
+    qr,
+    orderId,
+    customerName: order.customerName,
+    returnItems,
+    newItems: [],
+    status: 'in_transit',
+    scanned: false,
+    createdAt,
+    courierConfirmedAt: null,
+    demoCustomer: true,
+    pendingPoints: pointsForUnits(returnItems),
+    pointsCredited: false,
+    inventoryCleared: false,
+    endReason,
+  });
+  state.lastPouchId = pouchId;
+  state.pouchCounter += 1;
+  state.orderCounter += 1;
+  return { pickupOrder: order, collected: returnItems, reused: false };
+}
+
+function closeSubscription(mode) {
+  const movement = hadMovementThisPeriod();
+  const endReason = mode === 'suspend' ? 'הקפאה' : 'ביטול';
+  const { pickupOrder, collected } = startEndPickup(endReason);
+  let fee = null;
+  if (movement) {
+    fee = recordShipFee(
+      mode === 'suspend'
+        ? 'הקפאת מנוי אחרי משלוח או החזרה בחודש המנוי'
+        : 'ביטול מנוי אחרי משלוח או החזרה בחודש המנוי',
+      pickupOrder?.id,
+    );
+  }
   state.cart = [];
   state.exchangeReturns = [];
   state.exchangeCart = [];
-  state.flash = 'המנוי הוקפא. לא תחויבי ולא תוכלי להזמין עד ההפעלה מחדש.';
-  return getSnapshot();
+  if (!state.registration) state.registration = {};
+  const feeNote = fee ? ` · מחויבת ב-₪${EXTRA_SHIP_FEE} דמי משלוח` : '';
+  const pickupNote = collected.length
+    ? ' שליח יגיע לאסוף את התכשיטים בימים הקרובים.'
+    : '';
+  if (mode === 'suspend') {
+    state.registration.suspendedAt = new Date().toISOString();
+    state.registration.suspended = true;
+    state.flash = `המנוי הוקפא.${pickupNote}${feeNote}`;
+  } else {
+    state.subscribed = false;
+    state.planId = null;
+    state.pointsBalance = 0;
+    state.registration.canceledAt = new Date().toISOString();
+    state.address = { ...(state.address || {}), canceledAt: state.registration.canceledAt };
+    state.flash = `המנוי בוטל.${pickupNote}${feeNote}`;
+  }
+  return {
+    ...getSnapshot(),
+    endSubscription: {
+      mode,
+      pickup: collected.length > 0,
+      fee,
+      itemCount: collected.length,
+    },
+  };
+}
+
+export function suspendOwnSubscription() {
+  if (!state.subscribed) throw new Error('אין מנוי פעיל');
+  if (isSuspended()) throw new Error('המנוי כבר מוקפא');
+  return closeSubscription('suspend');
 }
 
 export function resumeOwnSubscription() {
@@ -843,25 +1045,8 @@ export function resumeOwnSubscription() {
 }
 
 export function cancelSubscription() {
-  if (!state.subscribed) throw new Error('אין מנוי פעיל');
-  if ((state.myItems || []).length > 0) {
-    throw new Error('יש להחזיר את כל התכשיטים לפני ביטול המנוי');
-  }
-  const activeReturn = state.returnPouches.find(
-    (p) => isMyPouch(p) && p.status !== 'completed',
-  );
-  if (activeReturn) {
-    throw new Error('יש החזרה פעילה — יש להשלים אותה לפני ביטול המנוי');
-  }
-
-  state.subscribed = false;
-  state.planId = null;
-  state.pointsBalance = 0;
-  state.cart = [];
-  state.exchangeReturns = [];
-  state.exchangeCart = [];
-  state.flash = 'המנוי בוטל — אפשר להצטרף שוב בכל עת';
-  return getSnapshot();
+  if (!state.subscribed && !isSuspended()) throw new Error('אין מנוי פעיל');
+  return closeSubscription('cancel');
 }
 
 export function login() {
@@ -931,7 +1116,7 @@ export function addToCart(productId) {
   if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
   if (state.cart.includes(productId)) return getSnapshot();
   const p = product(productId);
-  if (!p) throw new Error('Product not found');
+  if (!p) throw new Error('התכשיט לא נמצא');
   if (remainingPoints() < p.points) throw new Error('אין מספיק נקודות');
   if (availableUnitsForProduct(productId).length === 0) throw new Error('אין במלאי');
   state.cart.push(productId);
@@ -953,6 +1138,54 @@ function userIdSuffix() {
 function makeQrCode() {
   const random = Math.random().toString(36).slice(2, 8).toUpperCase();
   return `QR-${random}${userIdSuffix()}`;
+}
+
+function itemsHeldByCustomer() {
+  return state.myItems.filter((uid) => {
+    const u = unit(uid);
+    return u && u.status === 'אצל לקוחה';
+  });
+}
+
+function hasPriorBoxOrder() {
+  if (itemsHeldByCustomer().length > 0) return true;
+  return state.orders.some((o) => {
+    if (!isMyOrder(o)) return false;
+    const type = o.type || 'הזמנה';
+    return type === 'הזמנה' || type === 'הזמנה ראשונה' || type === 'החלפה';
+  });
+}
+
+function linkReturnPouch(order, returnItems) {
+  const qr = makeQrCode();
+  const pouchId = `POUCH-${state.pouchCounter}${userIdSuffix()}`;
+  const createdAt = new Date().toISOString();
+  for (const uid of returnItems) {
+    const idx = state.units.findIndex((u) => u.id === uid);
+    if (idx > -1) state.units[idx] = { ...state.units[idx], status: 'בדרך חזרה' };
+  }
+  state.returnPouches.push({
+    id: pouchId,
+    userId: state.currentUserId || null,
+    qr,
+    orderId: order.id,
+    customerName: order.customerName,
+    returnItems,
+    newItems: order.items || [],
+    status: 'in_transit',
+    scanned: false,
+    createdAt,
+    courierConfirmedAt: null,
+    demoCustomer: true,
+    pendingPoints: pointsForUnits(returnItems),
+    pointsCredited: false,
+    inventoryCleared: false,
+  });
+  state.lastPouchId = pouchId;
+  state.pouchCounter += 1;
+  order.qr = qr;
+  order.pouchId = pouchId;
+  order.returnItems = returnItems;
 }
 
 export function confirmOrder(payload = {}) {
@@ -981,21 +1214,35 @@ export function confirmOrder(payload = {}) {
     (sum, uid) => sum + product(unit(uid).modelId).points,
     0,
   );
-  const newOrder = {
-    id: `ORD-${state.orderCounter}${userIdSuffix()}`,
-    type: 'הזמנה',
-    userId: state.currentUserId || null,
-    customerName: state.currentUserName || 'הלקוחה (דמו)',
-    items: orderItems,
-    status: 'ליקוט',
-    date: 'היום',
-  };
+  const returnItems = [...state.exchangeReturns];
+  const isExchange = returnItems.length > 0;
+  const type = isExchange ? 'החלפה' : hasPriorBoxOrder() ? 'הזמנה' : 'הזמנה ראשונה';
+  const newOrder = attachCourierJob(
+    {
+      id: `ORD-${state.orderCounter}${userIdSuffix()}`,
+      type,
+      userId: state.currentUserId || null,
+      customerName: state.currentUserName || 'הלקוחה (דמו)',
+      items: orderItems,
+      returnItems,
+      status: 'ליקוט',
+      date: 'היום',
+    },
+    isExchange ? 'both' : 'delivery',
+    courierOpts(),
+  );
+  if (isExchange) linkReturnPouch(newOrder, returnItems);
   state.myItems = [...state.myItems, ...orderItems];
   state.cart = [];
+  state.exchangeReturns = [];
   state.pointsBalance -= spent;
   state.orders.push(newOrder);
   state.orderCounter += 1;
-  state.flash = 'ההזמנה בדרך ✓';
+  state.flash = isExchange
+    ? 'החלפה בדרך — משלוח ואיסוף ✓'
+    : type === 'הזמנה ראשונה'
+      ? 'ההזמנה הראשונה בדרך — משלוח ✓'
+      : 'ההזמנה בדרך — משלוח ✓';
   return getSnapshot();
 }
 
@@ -1033,15 +1280,9 @@ export function purchaseItem(payload = {}) {
   if (!guest && payload.saveAddress && payload.address) {
     state.address = { ...address };
   }
-  const payment = payload.payment
-    ? {
-        holder: payload.payment.holder || '',
-        last4: payload.payment.last4 || '',
-        expiry: payload.payment.expiry || '',
-      }
-    : state.payment;
-  if (!guest && payload.savePayment && payload.payment) {
-    state.payment = { ...payment };
+  const payment = normalizePayment(payload.payment) || normalizePayment(state.payment);
+  if (!guest && payload.savePayment && normalizePayment(payload.payment)) {
+    state.payment = normalizePayment(payload.payment);
   }
   if (!guest) {
     state.creditsUsed = (state.creditsUsed || 0) + creditUsed;
@@ -1080,7 +1321,7 @@ export function purchaseItem(payload = {}) {
     needsShipping,
     shippedAt: null,
   };
-  state.orders.unshift({
+  const purchaseOrder = {
     id,
     type: 'רכישה',
     userId: state.currentUserId || null,
@@ -1091,7 +1332,9 @@ export function purchaseItem(payload = {}) {
     newItems: [meta],
     status: needsShipping ? 'ליקוט' : 'נמסרה',
     date: new Date().toISOString(),
-  });
+  };
+  if (needsShipping) attachCourierJob(purchaseOrder, 'delivery', courierOpts());
+  state.orders.unshift(purchaseOrder);
   rebuildPurchasesFromOrders();
   const msg =
     creditUsed > 0
@@ -1129,7 +1372,7 @@ export function toggleReturn(unitId) {
 export function addExchangeProduct(productId) {
   if (state.exchangeCart.includes(productId)) return getSnapshot();
   const p = product(productId);
-  if (!p) throw new Error('Product not found');
+  if (!p) throw new Error('התכשיט לא נמצא');
   if (exchangeAvailablePoints() < p.points) throw new Error('אין מספיק נקודות');
   if (availableUnitsForProduct(productId).length === 0) throw new Error('אין במלאי');
   state.exchangeCart.push(productId);
@@ -1172,18 +1415,24 @@ export function confirmExchange() {
   const pouchId = `POUCH-${state.pouchCounter}${userIdSuffix()}`;
 
   const createdAt = new Date().toISOString();
-  state.orders.push({
-    id: orderId,
-    type: 'החזרה',
-    userId: state.currentUserId || null,
-    customerName: state.currentUserName || 'הלקוחה (דמו)',
-    items: [],
-    returnItems,
-    status: 'בדרך חזרה',
-    date: createdAt,
-    qr,
-    pouchId,
-  });
+  state.orders.push(
+    attachCourierJob(
+      {
+        id: orderId,
+        type: 'החזרה',
+        userId: state.currentUserId || null,
+        customerName: state.currentUserName || 'הלקוחה (דמו)',
+        items: [],
+        returnItems,
+        status: 'אריזה',
+        date: createdAt,
+        qr,
+        pouchId,
+      },
+      'pickup',
+      courierOpts(),
+    ),
+  );
 
   state.returnPouches.push({
     id: pouchId,
@@ -1196,7 +1445,7 @@ export function confirmExchange() {
     status: 'in_transit',
     scanned: false,
     createdAt,
-    courierConfirmedAt: createdAt,
+    courierConfirmedAt: null,
     demoCustomer: true,
     pendingPoints,
     pointsCredited: false,
@@ -1208,7 +1457,7 @@ export function confirmExchange() {
   state.exchangeReturns = [];
   state.exchangeCart = [];
   state.flash =
-    'תהליך החזרה החל, ברגע שהחבילה תוחזר ותאושר על ידינו תזוכה בנקודות חזרה';
+    'החזרה נפתחה — נזמין שליח לאיסוף בלבד. הנקודות יזוכו אחרי סריקה במחסן';
   return getSnapshot();
 }
 
@@ -1294,7 +1543,7 @@ export function pouchItemQC(pouchId, unitId, result) {
 
 export function updatePlan(id, field, value) {
   const allowed = ['price', 'points', 'maxItems', 'exchanges'];
-  if (!allowed.includes(field)) throw new Error('Invalid field');
+  if (!allowed.includes(field)) throw new Error('שדה לא תקין');
   const target = resolvePlan(id);
   if (!target) throw new Error('המסלול לא נמצא');
   state.plans = state.plans.map((p) =>
@@ -1340,8 +1589,8 @@ export function createProduct(input = {}) {
 export function updateProduct(id, field, value) {
   const numeric = ['points', 'price'];
   const text = ['name', 'category', 'metal', 'stone'];
-  if (![...numeric, ...text].includes(field)) throw new Error('Invalid field');
-  if (!product(id)) throw new Error('Product not found');
+  if (![...numeric, ...text].includes(field)) throw new Error('שדה לא תקין');
+  if (!product(id)) throw new Error('התכשיט לא נמצא');
   state.products = state.products.map((p) =>
     p.id === id ? { ...p, [field]: numeric.includes(field) ? Number(value) || 0 : String(value ?? '') } : p,
   );
@@ -1349,7 +1598,7 @@ export function updateProduct(id, field, value) {
 }
 
 export function setUnitStatus(unitId, status) {
-  if (!STATUSES.includes(status)) throw new Error('Invalid status');
+  if (!STATUSES.includes(status)) throw new Error('סטטוס לא תקין');
   state.units = state.units.map((u) => (u.id === unitId ? { ...u, status } : u));
   return getSnapshot();
 }
@@ -1371,7 +1620,7 @@ function stampCourierHandover(order, at = new Date().toISOString()) {
 
 export function advanceOrder(orderId) {
   const order = state.orders.find((o) => o.id === orderId);
-  if (!order) throw new Error('Order not found');
+  if (!order) throw new Error('ההזמנה לא נמצאה');
   const idx = STAGES.indexOf(order.status);
   if (idx < 0 || idx >= STAGES.length - 1) return getSnapshot();
   const next = STAGES[idx + 1];
@@ -1395,7 +1644,7 @@ export function advanceOrder(orderId) {
 }
 
 export function receiveUnit(modelId) {
-  if (!product(modelId)) throw new Error('Product not found');
+  if (!product(modelId)) throw new Error('התכשיט לא נמצא');
   // Skip demo-only serials when numbering manager stock
   const n = state.units.filter((u) => u.modelId === modelId && !u.demoOnly).length;
   state.units.push({ id: `${modelId}-${n + 1}`, modelId, status: 'זמין', demoOnly: false });

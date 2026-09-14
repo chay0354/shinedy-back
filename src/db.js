@@ -1,5 +1,6 @@
 import { isDbEnabled, getSupabase } from './supabase.js';
 import { emailsMatch, phonesMatch, signupConflictError } from './contactIdentity.js';
+import { decryptSecret, hasIdDocument, maskNationalId, prepareProfileWrite } from './idVault.js';
 
 const OPTIONAL_ORDER_COLS = ['courier_confirmed_at'];
 const OPTIONAL_POUCH_COLS = ['courier_confirmed_at'];
@@ -130,13 +131,13 @@ export async function loadCatalogIntoState(state) {
   return { seedOrders, seedPouches };
 }
 
-export async function loadStaffCustomers() {
+export async function loadStaffCustomers(viewerRole = 'admin') {
   const admin = getSupabase();
   if (!admin) return [];
   const { data, error } = await admin
     .from('profiles')
     .select(
-      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, points_balance',
+      'id, email, full_name, phone, role, plan_id, subscribed, subscribed_at, suspended_at, created_at, address, national_id, signature_completed, terms_accepted_at, id_document_url, points_balance',
     )
     .order('created_at', { ascending: false });
   if (error) throw error;
@@ -152,11 +153,14 @@ export async function loadStaffCustomers() {
       status: row.suspended_at ? 'מוקפא' : row.subscribed ? 'פעיל' : 'לא פעיל',
       joined: row.created_at ? new Date(row.created_at).toLocaleDateString('he-IL') : '',
       joinedAt: row.created_at || null,
-      nationalId: row.national_id || '',
-      idDocumentUploaded: Boolean(row.id_document_url),
+      nationalId: viewerRole === 'admin' ? decryptSecret(row.national_id) : maskNationalId(decryptSecret(row.national_id)),
+      idDocumentUploaded: hasIdDocument(row.id_document_url),
       signatureCompleted: Boolean(row.signature_completed),
       termsAcceptedAt: row.terms_accepted_at || null,
       address: row.address || {},
+      shippingCharges: Array.isArray(row.address?.shippingCharges) ? row.address.shippingCharges : [],
+      canceledAt: row.address?.canceledAt || null,
+      suspendedAt: row.suspended_at || null,
       points: String(row.points_balance ?? 0),
     }));
 }
@@ -179,7 +183,7 @@ export async function refreshOpsIntoState(state) {
 
 export async function ensureUserProfile(userId, patch = {}) {
   const admin = getSupabase();
-  if (!admin) throw new Error('Database not configured');
+  if (!admin) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
 
   async function readProfile() {
     const { data, error } = await admin.from('profiles').select('*').eq('id', userId).limit(1);
@@ -197,9 +201,10 @@ export async function ensureUserProfile(userId, patch = {}) {
 
   if (existing) {
     if (!Object.keys(patch).length) return existing;
+    const safe = await prepareProfileWrite(userId, patch);
     const { data, error } = await admin
       .from('profiles')
-      .update(patch)
+      .update(safe)
       .eq('id', userId)
       .select('*')
       .limit(1);
@@ -211,13 +216,14 @@ export async function ensureUserProfile(userId, patch = {}) {
   if (authError) throw authError;
 
   const meta = authData.user.user_metadata || {};
+  const safe = await prepareProfileWrite(userId, patch);
   const row = {
     id: userId,
-    email: patch.email ?? authData.user.email,
-    full_name: patch.full_name ?? meta.full_name ?? '',
-    phone: patch.phone ?? meta.phone ?? '',
-    registration_step: patch.registration_step ?? 0,
-    ...patch,
+    email: safe.email ?? authData.user.email,
+    full_name: safe.full_name ?? meta.full_name ?? '',
+    phone: safe.phone ?? meta.phone ?? '',
+    registration_step: safe.registration_step ?? 0,
+    ...safe,
   };
 
   const { data, error } = await admin.from('profiles').upsert(row, { onConflict: 'id' }).select('*').limit(1);
@@ -294,7 +300,16 @@ export async function loadUserSession(userId, state) {
   state.creditsUsed = profile.credits_used ?? 0;
   state.subscribedAt = profile.subscribed_at || (profile.subscribed ? profile.created_at : null);
   state.address = profile.address || {};
-  state.payment = profile.payment || null;
+  state.shippingCharges = Array.isArray(profile.address?.shippingCharges)
+    ? profile.address.shippingCharges
+    : [];
+  state.payment = (() => {
+    const raw = profile.payment;
+    if (!raw || typeof raw !== 'object') return null;
+    const last4 = String(raw.last4 || '').replace(/\D/g, '').slice(-4);
+    if (last4.length < 4) return null;
+    return { holder: String(raw.holder || '').trim(), last4, expiry: String(raw.expiry || '').trim() };
+  })();
   state.cart = profile.cart || [];
   state.exchangeReturns = profile.exchange_returns || [];
   state.exchangeCart = profile.exchange_cart || [];
@@ -308,13 +323,14 @@ export async function loadUserSession(userId, state) {
     phone: profile.phone,
     phoneVerified: profile.phone_verified,
     emailVerified: profile.email_verified,
-    idDocumentUrl: profile.id_document_url,
+    idDocumentUrl: hasIdDocument(profile.id_document_url) ? profile.id_document_url : '',
+    idDocumentUploaded: hasIdDocument(profile.id_document_url),
     signatureCompleted: profile.signature_completed,
     paymentMethodAdded: profile.payment_method_added,
     fullName: profile.full_name,
     email: profile.email,
-    nationalId: profile.national_id || '',
-    signatureData: profile.signature_data || '',
+    nationalId: decryptSecret(profile.national_id),
+    signatureData: '',
     termsAcceptedAt: profile.terms_accepted_at || null,
     privacyAcceptedAt: profile.privacy_accepted_at || null,
     noticesAcceptedAt: profile.notices_accepted_at || null,
@@ -322,6 +338,10 @@ export async function loadUserSession(userId, state) {
     address: profile.address || {},
     suspendedAt: profile.suspended_at || null,
     suspended: Boolean(profile.suspended_at),
+    canceledAt: profile.address?.canceledAt || null,
+    shippingCharges: Array.isArray(profile.address?.shippingCharges)
+      ? profile.address.shippingCharges
+      : [],
   };
 
   for (const row of ownedUnitsRes.data || []) {
@@ -339,7 +359,7 @@ export async function loadUserSession(userId, state) {
 
 async function persistUserUnits(userId, state) {
   const client = getSupabase();
-  if (!client) throw new Error('Database not configured');
+  if (!client) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
   const unitIds = new Set(state.myItems || []);
   for (const o of state.orders) {
     if (o.userId !== userId) continue;
@@ -364,7 +384,7 @@ async function persistUserUnits(userId, state) {
 export async function persistUserSession(userId, state, userOrders, userPouches, userToken) {
   // Always use the secret/admin client for writes so RLS never blocks server flows.
   const client = getSupabase();
-  if (!client) throw new Error('Database not configured');
+  if (!client) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
 
   const profileUpdate = {
     subscribed: state.subscribed,
@@ -390,11 +410,11 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     signature_completed: state.registration?.signatureCompleted ?? false,
     payment_method_added: state.registration?.paymentMethodAdded ?? false,
     full_name: state.registration?.fullName,
-    national_id: state.registration?.nationalId || null,
     terms_accepted_at: state.registration?.termsAcceptedAt || null,
     privacy_accepted_at: state.registration?.privacyAcceptedAt || null,
     notices_accepted_at: state.registration?.noticesAcceptedAt || null,
     signup_ip: state.registration?.signupIp || null,
+    suspended_at: state.registration?.suspendedAt || null,
     updated_at: new Date().toISOString(),
   };
 
@@ -420,6 +440,23 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
       .update(fallback)
       .eq('id', userId);
     if (fallbackError) throw fallbackError;
+  }
+
+  if (state.payment && typeof state.payment === 'object') {
+    const last4 = String(state.payment.last4 || '').replace(/\D/g, '').slice(-4);
+    if (last4.length >= 4) {
+      const { error: payErr } = await client
+        .from('profiles')
+        .update({
+          payment: {
+            holder: String(state.payment.holder || '').trim(),
+            last4,
+            expiry: String(state.payment.expiry || '').trim(),
+          },
+        })
+        .eq('id', userId);
+      if (payErr) console.error('persist payment:', payErr.message || payErr);
+    }
   }
 
   await persistUserUnits(userId, state);
@@ -504,10 +541,11 @@ const OPTIONAL_PROFILE_COLS = [
 
 export async function saveSignupLegal(userId, patch) {
   const client = getSupabase();
-  if (!client) throw new Error('Database not configured');
-  const { error } = await client.from('profiles').update(patch).eq('id', userId);
+  if (!client) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
+  const safe = await prepareProfileWrite(userId, patch);
+  const { error } = await client.from('profiles').update(safe).eq('id', userId);
   if (!error) return;
-  const fallback = { ...patch };
+  const fallback = { ...safe };
   for (const col of OPTIONAL_PROFILE_COLS) delete fallback[col];
   const { error: fallbackError } = await client.from('profiles').update(fallback).eq('id', userId);
   if (fallbackError) throw fallbackError;

@@ -8,9 +8,11 @@ import { pingDatabase, getConfigStatus } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
 import { normalizeSignupEmail, normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
-import { checkEmailCode, issueEmailCode, verificationEnabled } from './emailVerify.js';
+import { checkEmailCode, issueEmailCode } from './emailVerify.js';
 import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.js';
 import { signupProofValid, signupVerifyProof } from './signupProof.js';
+import { heError } from './heError.js';
+import { staffOpenDocument } from './idVault.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -36,7 +38,7 @@ app.use(express.json({ limit: '8mb' }));
 
 app.use((err, _req, res, next) => {
   if (err instanceof SyntaxError && 'body' in err) {
-    res.status(400).json({ error: 'Invalid JSON in request body' });
+    res.status(400).json({ error: 'הבקשה אינה תקינה' });
     return;
   }
   next(err);
@@ -46,11 +48,8 @@ app.get('/', (_req, res) => {
   res.redirect('/api/health');
 });
 
-function needsEmailVerification(snapshot) {
-  if (!verificationEnabled()) return false;
-  const role = snapshot?.auth?.role;
-  if (role === 'admin' || role === 'warehouse') return false;
-  return !snapshot?.registration?.emailVerified;
+function needsEmailVerification(_snapshot) {
+  return false;
 }
 
 function needsPhoneVerification(snapshot) {
@@ -107,7 +106,7 @@ function wrap(fn, opts = {}) {
       res.json(data ?? store.getSnapshot());
     } catch (e) {
       const message = e.cause?.message ? `${e.message}: ${e.cause.message}` : e.message;
-      res.status(e.status || 400).json({ error: message });
+      res.status(e.status || 400).json({ error: heError(message) });
     }
   };
 }
@@ -133,7 +132,7 @@ app.post('/api/contact', async (req, res) => {
     const result = await sendContact(req.body || {});
     res.json(result);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'שליחת הפנייה נכשלה' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'שליחת הפנייה נכשלה') });
   }
 });
 
@@ -154,7 +153,7 @@ app.post('/api/auth/check-signup', async (req, res) => {
     }
     res.json({ ok: true });
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'בדיקת ההרשמה נכשלה' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'בדיקת ההרשמה נכשלה') });
   }
 });
 
@@ -202,16 +201,11 @@ app.post('/api/auth/register', async (req, res) => {
           }
         }
         if (req.body?.payment) {
-          st.payment = {
-            holder: String(req.body.payment.holder || '').trim(),
-            last4: String(req.body.payment.last4 || '').replace(/\D/g, '').slice(-4),
-            expiry: String(req.body.payment.expiry || '').trim(),
-          };
-          if (st.registration) st.registration.paymentMethodAdded = true;
+          st.payment = store.normalizePayment(req.body.payment);
+          if (st.registration && st.payment) st.registration.paymentMethodAdded = true;
         }
         if (st.registration) {
-          st.registration.emailVerified =
-            !verificationEnabled() || signupProofValid('email', email, req.body?.emailProof);
+          st.registration.emailVerified = true;
           st.registration.phoneVerified =
             !smsVerificationEnabled() || signupProofValid('sms', mobile, req.body?.phoneProof);
         }
@@ -251,11 +245,7 @@ app.post('/api/auth/register', async (req, res) => {
     });
     res.json(snapshot);
   } catch (e) {
-    const raw = e.message || '';
-    const error = /unable to validate email|invalid format/i.test(raw)
-      ? 'יש למלא אימייל תקין, למשל name@email.com'
-      : raw || 'שגיאה בהרשמה';
-    res.status(e.status || 400).json({ error });
+    res.status(e.status || 400).json({ error: heError(e.message, 'שגיאה בהרשמה') });
   }
 });
 
@@ -282,7 +272,7 @@ app.post('/api/auth/login', async (req, res) => {
     const snapshot = await session.withRequest(req, () => store.login());
     res.json(snapshot);
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message });
+    res.status(e.status || 400).json({ error: heError(e.message, 'אימייל או סיסמה שגויים') });
   }
 });
 
@@ -302,7 +292,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     await issueEmailCode(email);
     res.json({ ok: true });
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'שליחת הקוד נכשלה' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'שליחת הקוד נכשלה') });
   }
 });
 
@@ -312,7 +302,7 @@ app.post('/api/auth/check-email-code', async (req, res) => {
     await checkEmailCode(email, req.body?.code);
     res.json({ ok: true, proof: signupVerifyProof('email', email) });
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'הקוד שגוי' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'הקוד שגוי') });
   }
 });
 
@@ -322,7 +312,7 @@ app.post('/api/auth/check-phone-code', async (req, res) => {
     await checkSmsCode(phone, req.body?.code);
     res.json({ ok: true, proof: signupVerifyProof('sms', phone) });
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'הקוד שגוי' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'הקוד שגוי') });
   }
 });
 
@@ -340,7 +330,7 @@ app.post('/api/auth/resend-phone-verification', async (req, res) => {
     await issueSmsCode(phone);
     res.json({ ok: true });
   } catch (e) {
-    res.status(e.status || 400).json({ error: e.message || 'שליחת ה-SMS נכשלה' });
+    res.status(e.status || 400).json({ error: heError(e.message, 'שליחת ה-SMS נכשלה') });
   }
 });
 
@@ -357,13 +347,10 @@ app.patch(
       phone: patch.phone ?? st.registration?.phone,
       phoneVerified: patch.phoneVerified ?? st.registration?.phoneVerified ?? false,
       emailVerified: patch.emailVerified ?? st.registration?.emailVerified ?? false,
-      idDocumentUrl: patch.idDocumentUrl ?? st.registration?.idDocumentUrl,
       signatureCompleted:
         patch.signatureCompleted ?? st.registration?.signatureCompleted ?? false,
       paymentMethodAdded:
         patch.paymentMethodAdded ?? st.registration?.paymentMethodAdded ?? false,
-      nationalId: patch.nationalId ?? st.registration?.nationalId,
-      signatureData: patch.signatureData ?? st.registration?.signatureData,
       termsAcceptedAt: patch.termsAcceptedAt ?? st.registration?.termsAcceptedAt,
       privacyAcceptedAt: patch.privacyAcceptedAt ?? st.registration?.privacyAcceptedAt,
       noticesAcceptedAt: patch.noticesAcceptedAt ?? st.registration?.noticesAcceptedAt,
@@ -383,14 +370,10 @@ app.patch(
 );
 
 app.post('/api/subscribe', wrap((req) => {
-  const payment = req.body?.payment;
+  const payment = store.normalizePayment(req.body?.payment);
   if (payment) {
     const st = store.getMutableState();
-    st.payment = {
-      holder: String(payment.holder || '').trim(),
-      last4: String(payment.last4 || '').replace(/\D/g, '').slice(-4),
-      expiry: String(payment.expiry || '').trim(),
-    };
+    st.payment = payment;
     if (st.registration) st.registration.paymentMethodAdded = true;
   }
   return store.subscribe(req.body.planId);
@@ -510,6 +493,15 @@ app.post(
 );
 
 app.post('/api/reset', wrap(() => store.resetStore(), { staff: true }));
+
+app.get(
+  '/api/admin/customers/:id/id-document',
+  wrap(async (req) => {
+    return staffOpenDocument(req.params.id, {
+      staffUserId: store.getMutableState().currentUserId,
+    });
+  }, { staff: true, staffRoles: ['admin'] }),
+);
 
 app.post(
   '/api/admin/clear-users',
