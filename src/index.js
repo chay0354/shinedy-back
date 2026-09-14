@@ -153,6 +153,7 @@ app.post('/api/auth/check-signup', async (req, res) => {
     }
     res.json({ ok: true });
   } catch (e) {
+    if (!e.status) console.error('check-signup:', e.message || e);
     res.status(e.status || 400).json({ error: heError(e.message, 'בדיקת ההרשמה נכשלה') });
   }
 });

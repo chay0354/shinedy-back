@@ -34,7 +34,7 @@ const PATTERNS = [
 export function heError(raw, fallback = 'משהו לא עבד. נסי שוב') {
   const text = String(raw || '').trim();
   if (!text) return fallback;
-  if (/[\u0590-\u05FF]/.test(text) && !/[A-Za-z]{4,}/.test(text)) return text;
+  if (/[\u0590-\u05FF]/.test(text)) return text;
   if (EXACT[text]) return EXACT[text];
   for (const [re, he] of PATTERNS) {
     if (re.test(text)) return he;
