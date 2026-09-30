@@ -450,11 +450,7 @@ app.post(
     staffRoles: ['admin', 'warehouse'],
     skipStaffCustomers: true,
     persist: 'product',
-    productId: (req) =>
-      String(req.body?.id || req.body?.sku || '')
-        .trim()
-        .replace(/[^A-Za-z0-9]/g, '')
-        .toUpperCase(),
+    productId: (req) => store.productCodeOf(req.body?.id || req.body?.sku),
   }),
 );
 
@@ -484,7 +480,7 @@ app.post(
 
 app.post(
   '/api/warehouse/receive',
-  wrap((req) => store.receiveUnit(req.body.modelId), {
+  wrap((req) => store.receiveUnit(req.body.modelId, req.body.code), {
     staff: true,
     skipStaffCustomers: true,
     persist: 'product',

@@ -1580,19 +1580,28 @@ export function updatePlan(id, field, value) {
   return getSnapshot();
 }
 
+export function productCodeOf(value) {
+  return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function assertProductCode(value) {
+  const code = productCodeOf(value);
+  if (!code) throw new Error('חסר מק״ט');
+  if (!/^[A-Z0-9\-_.]+$/.test(code)) throw new Error('מק״ט יכול להכיל רק אותיות באנגלית, ספרות ומקף');
+  return code;
+}
+
+function codeTaken(code, exceptModelId = null) {
+  if (state.units.some((u) => productCodeOf(u.id) === code)) return true;
+  return skuTaken(code, exceptModelId);
+}
+
 export function createProduct(input = {}) {
   const name = String(input.name || '').trim();
   if (!name) throw new Error('חסר שם תכשיט');
   const category = String(input.category || 'טבעות').trim();
-  const prefix = { טבעות: 'R', עגילים: 'E', שרשראות: 'N', צמידים: 'B' }[category] || 'J';
-  let id = String(input.id || input.sku || '')
-    .trim()
-    .replace(/[^A-Za-z0-9]/g, '')
-    .toUpperCase();
-  if (!id) id = `${prefix}${Date.now().toString(36).toUpperCase()}`;
-  if (product(id) || skuTaken(id) || state.units.some((u) => u.id === `${id}-1` || u.id === id)) {
-    throw new Error('מק״ט כבר קיים');
-  }
+  const id = assertProductCode(input.sku || input.id);
+  if (codeTaken(id)) throw new Error('מק״ט כבר קיים');
   state.products.push({
     id,
     sku: id,
@@ -1603,8 +1612,9 @@ export function createProduct(input = {}) {
     points: Number(input.points) || 30,
     price: Number(input.price) || 0,
   });
+  // The chosen code is the barcode of the first piece. No separate number.
   state.units.push({
-    id: `${id}-1`,
+    id,
     modelId: id,
     status: 'זמין',
     demoOnly: false,
@@ -1613,7 +1623,7 @@ export function createProduct(input = {}) {
 }
 
 function normalizeSku(value) {
-  return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+  return productCodeOf(value);
 }
 
 function skuTaken(sku, exceptId = null) {
@@ -1629,9 +1639,9 @@ export function updateProduct(id, field, value) {
   const text = ['name', 'category', 'metal', 'stone'];
   if (!product(id)) throw new Error('התכשיט לא נמצא');
   if (field === 'sku') {
-    const sku = normalizeSku(value) || id;
-    if (!/^[A-Z0-9\-_.]+$/.test(sku)) throw new Error('מק״ט יכול להכיל רק אותיות באנגלית, ספרות ומקף');
-    if (skuTaken(sku, id)) throw new Error('מק״ט כבר קיים');
+    const sku = assertProductCode(value || id);
+    const usedByOtherPiece = state.units.some((u) => productCodeOf(u.id) === sku && u.modelId !== id);
+    if (usedByOtherPiece || skuTaken(sku, id)) throw new Error('מק״ט כבר קיים');
     state.products = state.products.map((p) => (p.id === id ? { ...p, sku } : p));
     return getSnapshot();
   }
@@ -1694,11 +1704,22 @@ export function advanceOrder(orderId) {
   return getSnapshot();
 }
 
-export function receiveUnit(modelId) {
+export function receiveUnit(modelId, code) {
   if (!product(modelId)) throw new Error('התכשיט לא נמצא');
-  // Skip demo-only serials when numbering manager stock
-  const n = state.units.filter((u) => u.modelId === modelId && !u.demoOnly).length;
-  state.units.push({ id: `${modelId}-${n + 1}`, modelId, status: 'זמין', demoOnly: false });
+  const model = product(modelId);
+  let id = String(code ?? '').trim() ? assertProductCode(code) : '';
+  if (!id) {
+    const base = productCodeOf(model.sku || modelId);
+    let n = state.units.filter((u) => u.modelId === modelId && !u.demoOnly).length;
+    id = `${base}-${n + 1}`;
+    while (state.units.some((u) => u.id === id)) {
+      n += 1;
+      id = `${base}-${n + 1}`;
+    }
+  } else if (codeTaken(id, modelId)) {
+    throw new Error('הקוד כבר קיים');
+  }
+  state.units.push({ id, modelId, status: 'זמין', demoOnly: false });
   return getSnapshot();
 }
 
