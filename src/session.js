@@ -70,7 +70,8 @@ async function hydrateForRequest(req, opts = {}) {
     const { user: staffUser, role } = await requireStaffAccess(req, staffRoles);
     const orderId = req.params?.id;
     const haveOrder = orderId && store.getMutableState().orders?.some((o) => o.id === orderId);
-    if (!(opts.persist === 'order' && haveOrder)) {
+    const targeted = (opts.persist === 'order' && haveOrder) || opts.persist === 'product';
+    if (!targeted) {
       await refreshSeedFromDb();
     }
     store.clearUserSession();
@@ -147,6 +148,11 @@ async function persistAfterRequest(req, user, opts = {}) {
     if (opts.persist === 'order') {
       const order = st.orders.find((o) => o.id === req.params?.id);
       await db.persistOrderAndUnits(st, order);
+      return;
+    }
+    if (opts.persist === 'product') {
+      const productId = typeof opts.productId === 'function' ? opts.productId(req, st) : req.params?.id;
+      await db.persistProductAndUnits(st, productId);
       return;
     }
     await db.persistGlobalCatalog(st, seedOrders, seedPouches);

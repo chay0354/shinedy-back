@@ -1590,11 +1590,12 @@ export function createProduct(input = {}) {
     .replace(/[^A-Za-z0-9]/g, '')
     .toUpperCase();
   if (!id) id = `${prefix}${Date.now().toString(36).toUpperCase()}`;
-  if (product(id) || state.units.some((u) => u.id === `${id}-1` || u.id === id)) {
+  if (product(id) || skuTaken(id) || state.units.some((u) => u.id === `${id}-1` || u.id === id)) {
     throw new Error('מק״ט כבר קיים');
   }
   state.products.push({
     id,
+    sku: id,
     name,
     category,
     metal: input.metal || 'כסף 925',
@@ -1611,11 +1612,30 @@ export function createProduct(input = {}) {
   return getSnapshot();
 }
 
+function normalizeSku(value) {
+  return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function skuTaken(sku, exceptId = null) {
+  const wanted = normalizeSku(sku);
+  if (!wanted) return false;
+  return state.products.some(
+    (p) => p.id !== exceptId && (normalizeSku(p.sku || p.id) === wanted || normalizeSku(p.id) === wanted),
+  );
+}
+
 export function updateProduct(id, field, value) {
   const numeric = ['points', 'price'];
   const text = ['name', 'category', 'metal', 'stone'];
-  if (![...numeric, ...text].includes(field)) throw new Error('שדה לא תקין');
   if (!product(id)) throw new Error('התכשיט לא נמצא');
+  if (field === 'sku') {
+    const sku = normalizeSku(value) || id;
+    if (!/^[A-Z0-9\-_.]+$/.test(sku)) throw new Error('מק״ט יכול להכיל רק אותיות באנגלית, ספרות ומקף');
+    if (skuTaken(sku, id)) throw new Error('מק״ט כבר קיים');
+    state.products = state.products.map((p) => (p.id === id ? { ...p, sku } : p));
+    return getSnapshot();
+  }
+  if (![...numeric, ...text].includes(field)) throw new Error('שדה לא תקין');
   state.products = state.products.map((p) =>
     p.id === id ? { ...p, [field]: numeric.includes(field) ? Number(value) || 0 : String(value ?? '') } : p,
   );

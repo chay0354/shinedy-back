@@ -109,6 +109,7 @@ export async function loadCatalogIntoState(state) {
 
   state.products = (productsRes.data || []).map((p) => ({
     id: p.id,
+    sku: p.sku || p.id,
     name: p.name,
     category: p.category,
     metal: p.metal,
@@ -195,6 +196,79 @@ export async function loadStaffCustomers(viewerRole = 'admin') {
       suspendedAt: row.suspended_at || null,
       points: String(row.points_balance ?? 0),
     }));
+}
+
+export async function listFavoriteIds(userId) {
+  const { data, error } = await getSupabase()
+    .from('favorites')
+    .select('product_id, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r) => r.product_id);
+}
+
+export async function setFavorite(userId, productId, on) {
+  const client = getSupabase();
+  if (on) {
+    const { error } = await client
+      .from('favorites')
+      .upsert({ user_id: userId, product_id: productId }, { onConflict: 'user_id,product_id', ignoreDuplicates: true });
+    if (error) throw error;
+  } else {
+    const { error } = await client
+      .from('favorites')
+      .delete()
+      .eq('user_id', userId)
+      .eq('product_id', productId);
+    if (error) throw error;
+  }
+  return listFavoriteIds(userId);
+}
+
+export async function addFavorites(userId, productIds) {
+  const rows = [...new Set(productIds || [])]
+    .filter(Boolean)
+    .map((product_id) => ({ user_id: userId, product_id }));
+  if (rows.length) {
+    const { error } = await getSupabase()
+      .from('favorites')
+      .upsert(rows, { onConflict: 'user_id,product_id', ignoreDuplicates: true });
+    if (error) throw error;
+  }
+  return listFavoriteIds(userId);
+}
+
+export async function listAllFavorites() {
+  const client = getSupabase();
+  const { data: favs, error } = await client
+    .from('favorites')
+    .select('user_id, product_id, created_at')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  const userIds = [...new Set((favs || []).map((f) => f.user_id))];
+  let profiles = [];
+  if (userIds.length) {
+    const res = await client
+      .from('profiles')
+      .select('id, full_name, email, phone, plan_id, role')
+      .in('id', userIds);
+    if (res.error) throw res.error;
+    profiles = (res.data || []).filter((p) => resolveUserRole(p) === 'customer');
+  }
+  const byId = new Map(profiles.map((p) => [p.id, p]));
+  return (favs || []).filter((f) => byId.has(f.user_id)).map((f) => {
+    const p = byId.get(f.user_id);
+    return {
+      productId: f.product_id,
+      userId: f.user_id,
+      createdAt: f.created_at,
+      name: p.full_name || p.email || 'לקוחה',
+      email: p.email || '',
+      phone: p.phone || '',
+      planId: p.plan_id || null,
+    };
+  });
 }
 
 export async function refreshOpsIntoState(state) {
@@ -694,6 +768,27 @@ export async function persistUnits(units) {
   if (error) throw error;
 }
 
+export async function persistProductAndUnits(state, productId) {
+  const p = (state.products || []).find((x) => x.id === productId);
+  if (!p) return;
+  await upsertRow(
+    getSupabase(),
+    'products',
+    {
+      id: p.id,
+      sku: p.sku || p.id,
+      name: p.name,
+      category: p.category,
+      metal: p.metal,
+      stone: p.stone,
+      points: p.points,
+      price: p.price,
+    },
+    ['sku'],
+  );
+  await persistUnits((state.units || []).filter((u) => u.modelId === productId));
+}
+
 export async function persistOrderAndUnits(state, order) {
   if (!order) return;
   await persistOrder(order);
@@ -733,16 +828,21 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
   }
 
   for (const p of state.products) {
-    const { error } = await getSupabase().from('products').upsert({
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      metal: p.metal,
-      stone: p.stone,
-      points: p.points,
-      price: p.price,
-    });
-    if (error) throw error;
+    await upsertRow(
+      getSupabase(),
+      'products',
+      {
+        id: p.id,
+        sku: p.sku || p.id,
+        name: p.name,
+        category: p.category,
+        metal: p.metal,
+        stone: p.stone,
+        points: p.points,
+        price: p.price,
+      },
+      ['sku'],
+    );
   }
 
   for (const u of state.units.filter((x) => !x.demoOnly)) {

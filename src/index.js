@@ -4,7 +4,7 @@ import express from 'express';
 import * as store from './store.js';
 import * as session from './session.js';
 import * as db from './db.js';
-import { pingDatabase, getConfigStatus } from './supabase.js';
+import { pingDatabase, getConfigStatus, getUserFromToken, isDbEnabled } from './supabase.js';
 import { clientIp, parseSignupLegal } from './signupLegal.js';
 import { sendContact } from './contact.js';
 import { normalizeSignupEmail, normalizeSignupPhone, signupConflictError } from './contactIdentity.js';
@@ -448,6 +448,13 @@ app.post(
   wrap((req) => store.createProduct(req.body || {}), {
     staff: true,
     staffRoles: ['admin', 'warehouse'],
+    skipStaffCustomers: true,
+    persist: 'product',
+    productId: (req) =>
+      String(req.body?.id || req.body?.sku || '')
+        .trim()
+        .replace(/[^A-Za-z0-9]/g, '')
+        .toUpperCase(),
   }),
 );
 
@@ -455,6 +462,8 @@ app.patch(
   '/api/admin/products/:id',
   wrap((req) => store.updateProduct(req.params.id, req.body.field, req.body.value), {
     staff: true,
+    skipStaffCustomers: true,
+    persist: 'product',
   }),
 );
 
@@ -475,7 +484,12 @@ app.post(
 
 app.post(
   '/api/warehouse/receive',
-  wrap((req) => store.receiveUnit(req.body.modelId), { staff: true }),
+  wrap((req) => store.receiveUnit(req.body.modelId), {
+    staff: true,
+    skipStaffCustomers: true,
+    persist: 'product',
+    productId: (req) => req.body?.modelId,
+  }),
 );
 
 app.post(
@@ -506,6 +520,76 @@ app.post(
 );
 
 app.post('/api/reset', wrap(() => store.resetStore(), { staff: true }));
+
+// Favorites bypass the shared store queue: they are a single-table read/write.
+async function requireUser(req, staffRoles = null) {
+  if (!isDbEnabled) {
+    const err = new Error('המועדפים זמינים רק לחשבון מחובר');
+    err.status = 401;
+    throw err;
+  }
+  await session.initDbIfNeeded();
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  const user = await getUserFromToken(token);
+  if (!user) {
+    const err = new Error('יש להתחבר');
+    err.status = 401;
+    throw err;
+  }
+  if (staffRoles) {
+    const role = await db.getUserRole(user.id);
+    if (!staffRoles.includes(role)) {
+      const err = new Error('אין הרשאת ניהול');
+      err.status = 403;
+      throw err;
+    }
+  }
+  return user;
+}
+
+function favoritesRoute(fn) {
+  return async (req, res) => {
+    try {
+      res.json(await fn(req));
+    } catch (e) {
+      const raw = `${e.message || ''} ${e.details || ''}`;
+      const message = /foreign key|favorites_product_id_fkey/i.test(raw) ? 'התכשיט לא נמצא' : e.message;
+      res.status(e.status || 400).json({ error: heError(message, 'שמירת המועדפים נכשלה') });
+    }
+  };
+}
+
+function productIdOf(req) {
+  const id = String(req.body?.productId || '').trim();
+  if (!id) {
+    const err = new Error('חסר מזהה תכשיט');
+    err.status = 400;
+    throw err;
+  }
+  return id;
+}
+
+app.get('/api/favorites', favoritesRoute(async (req) => {
+  const user = await requireUser(req);
+  return { ids: await db.listFavoriteIds(user.id) };
+}));
+
+app.post('/api/favorites', favoritesRoute(async (req) => {
+  const user = await requireUser(req);
+  return { ids: await db.setFavorite(user.id, productIdOf(req), req.body?.on !== false) };
+}));
+
+app.post('/api/favorites/merge', favoritesRoute(async (req) => {
+  const user = await requireUser(req);
+  const known = new Set(store.getMutableState().products.map((p) => p.id));
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter((id) => known.has(id));
+  return { ids: await db.addFavorites(user.id, ids) };
+}));
+
+app.get('/api/admin/favorites', favoritesRoute(async (req) => {
+  await requireUser(req, ['admin', 'warehouse']);
+  return { favorites: await db.listAllFavorites() };
+}));
 
 app.get(
   '/api/admin/customers/:id/id-document',
