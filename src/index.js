@@ -17,20 +17,22 @@ import { staffOpenDocument } from './idVault.js';
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
-const corsOrigins = CORS_ORIGIN.split(',').map((o) => o.trim());
+const corsOrigins = new Set(
+  [
+    ...CORS_ORIGIN.split(',').map((o) => o.trim()),
+    'https://shinedy.co',
+    'https://www.shinedy.co',
+  ].filter(Boolean),
+);
 
 app.use(
   cors({
     origin(origin, callback) {
-      const local =
+      const allowed =
         !origin ||
-        corsOrigins.includes(origin) ||
+        corsOrigins.has(origin) ||
         /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-      if (local) {
-        callback(null, true);
-        return;
-      }
-      callback(null, false);
+      callback(null, allowed);
     },
   }),
 );
