@@ -75,14 +75,13 @@ function resolvePlan(planId) {
 
 function makeInitialState() {
   const unitMap = {
-    'R21-1': 'זמין', 'R21-2': 'אצל לקוחה', 'R21-3': 'בניקוי',
-    'R34-1': 'זמין', 'R34-2': 'זמין', 'R34-3': 'בתיקון',
-    'N14-1': 'זמין', 'N14-2': 'שמור', 'N14-3': 'אצל לקוחה',
-    'N08-1': 'זמין', 'N08-2': 'זמין', 'N08-3': 'בדרך ללקוחה',
-    'E08-1': 'זמין', 'E08-2': 'בניקוי', 'E08-3': 'זמין',
-    'E19-1': 'זמין', 'E19-2': 'אצל לקוחה', 'E19-3': 'זמין',
-    'B33-1': 'זמין', 'B33-2': 'זמין', 'B33-3': 'בדרך חזרה',
-    'B12-1': 'זמין', 'B12-2': 'זמין', 'B12-3': 'שמור',
+    RCV1702: 'זמין',
+    RCV1023: 'זמין',
+    RCV1071: 'זמין',
+    RCV1208: 'זמין',
+    RCV2488: 'זמין',
+    RCV1189: 'זמין',
+    RCV1219: 'זמין',
   };
 
   return {
@@ -111,14 +110,13 @@ function makeInitialState() {
       { id: 'prestige', name: 'Prestige', price: 749, points: 1400, maxItems: 6, exchanges: 4, shipping: true, tagline: 'לגרדרובה עשירה' },
     ],
     products: [
-      { id: 'R21', name: 'טבעת אמה', category: 'טבעות', metal: 'זהב צהוב', stone: 'זירקון', points: 220, price: 1200 },
-      { id: 'R34', name: 'טבעת נועה', category: 'טבעות', metal: 'כסף', stone: 'אבן ירח', points: 150, price: 780 },
-      { id: 'N14', name: 'שרשרת ליה', category: 'שרשראות', metal: 'זהב רוזה', stone: 'פנינה', points: 300, price: 1600 },
-      { id: 'N08', name: 'שרשרת תמר', category: 'שרשראות', metal: 'כסף', stone: 'ללא אבן', points: 180, price: 950 },
-      { id: 'E08', name: 'עגילי מאיה', category: 'עגילים', metal: 'זהב צהוב', stone: 'יהלום מעבדה', points: 260, price: 1450 },
-      { id: 'E19', name: 'עגילי רון', category: 'עגילים', metal: 'כסף', stone: 'אבן חן כחולה', points: 140, price: 690 },
-      { id: 'B33', name: 'צמיד שני', category: 'צמידים', metal: 'זהב רוזה', stone: 'זירקון', points: 200, price: 1100 },
-      { id: 'B12', name: 'צמיד עדן', category: 'צמידים', metal: 'כסף', stone: 'ללא אבן', points: 130, price: 620 },
+      { id: 'RCV1702', sku: 'RCV1702', name: 'שיינא', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 0.92 קראט', points: 110, price: 7490, image: '/catalog/RCV1702.jpg' },
+      { id: 'RCV1023', sku: 'RCV1023', name: 'טבעת אובלית', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 2.76 קראט', points: 260, price: 21900, image: '/catalog/RCV1023.jpg' },
+      { id: 'RCV1071', sku: 'RCV1071', name: 'טבעת חישוק', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 0.47 קראט', points: 70, price: 3490, image: '/catalog/RCV1071.jpg' },
+      { id: 'RCV1208', sku: 'RCV1208', name: 'טבעת משולבת', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 1.23 קראט', points: 150, price: 9900, image: '/catalog/RCV1208.jpg' },
+      { id: 'RCV2488', sku: 'RCV2488', name: 'טבעת שתי אבנים', category: 'טבעות', metal: 'זהב צהוב', stone: 'יהלום מעבדה 1.01 קראט', points: 130, price: 8900, image: '/catalog/RCV2488.jpg' },
+      { id: 'RCV1189', sku: 'RCV1189', name: 'טבעת שורה', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 1.59 קראט', points: 190, price: 12900, image: '/catalog/RCV1189.jpg' },
+      { id: 'RCV1219', sku: 'RCV1219', name: 'טבעת ספירלה', category: 'טבעות', metal: 'זהב 14K', stone: 'יהלום מעבדה 0.67 קראט', points: 90, price: 5990, image: '/catalog/RCV1219.jpg' },
     ],
     units: Object.entries(unitMap).map(([id, status]) => ({
       id,
@@ -270,7 +268,7 @@ function availableUnitsForProduct(id) {
 }
 
 function cartPoints() {
-  return state.cart.reduce((sum, id) => sum + product(id).points, 0);
+  return state.cart.reduce((sum, id) => sum + (product(id)?.points || 0), 0);
 }
 
 /** Points locked in jewelry the customer still holds or is returning (not yet credited). */
@@ -428,7 +426,7 @@ function decorateOrder(o) {
       itemsLabel: (o.items || [])
         .map((uid) => {
           const u = unit(uid);
-          return u ? product(u.modelId).name : uid;
+          return u ? product(u.modelId)?.name || uid : uid;
         })
         .join(', '),
     },
@@ -611,7 +609,7 @@ export function getSnapshot() {
             process.env.TWILIO_VERIFY_SID),
       ),
     },
-    cart: state.cart.map((id) => product(id)),
+    cart: state.cart.map((id) => product(id)).filter(Boolean),
     cartTotal: cartPoints(),
     remaining,
     plans: state.plans.map((p) => ({
@@ -678,7 +676,7 @@ export function getSnapshot() {
         };
       })
       .filter(Boolean),
-    exchangeCart: state.exchangeCart.map((id) => product(id)),
+    exchangeCart: state.exchangeCart.map((id) => product(id)).filter(Boolean),
     exchangeAvail,
     orders: staff ? state.orders.map(decorateOrder) : undefined,
     myOrders: state.orders.filter(isMyOrder).map(decorateCustomerOrder),

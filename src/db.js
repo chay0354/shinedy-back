@@ -35,6 +35,16 @@ export function resolveUserRole(profile) {
   return profile?.role || 'customer';
 }
 
+function catalogMinPlan(p) {
+  const stone = String(p.stone || '');
+  const metal = String(p.metal || '');
+  const carat = Number((stone.match(/(\d+(?:\.\d+)?)/) || [])[1] || 0);
+  const large = Boolean(p.large) || carat >= 2;
+  if (stone.includes('יהלו')) return large ? 'gold' : 'combined';
+  if (metal.includes('זהב') && !metal.includes('מצופה')) return 'combined';
+  return 'silver';
+}
+
 function rowToUnit(row) {
   return {
     id: row.id,
@@ -116,6 +126,8 @@ export async function loadCatalogIntoState(state) {
     stone: p.stone,
     points: p.points,
     price: p.price,
+    image: p.image || null,
+    minPlan: catalogMinPlan(p),
   }));
 
   state.units = (unitsRes.data || []).map(rowToUnit);
@@ -416,10 +428,12 @@ export async function loadUserSession(userId, state) {
     if (last4.length < 4) return null;
     return { holder: String(raw.holder || '').trim(), last4, expiry: String(raw.expiry || '').trim() };
   })();
-  state.cart = profile.cart || [];
-  state.exchangeReturns = profile.exchange_returns || [];
-  state.exchangeCart = profile.exchange_cart || [];
-  state.myItems = profile.my_items || [];
+  const liveIds = new Set((state.products || []).map((p) => p.id));
+  const liveUnits = new Set((state.units || []).map((u) => u.id));
+  state.cart = (profile.cart || []).filter((id) => liveIds.has(id));
+  state.exchangeReturns = (profile.exchange_returns || []).filter((id) => liveUnits.has(id));
+  state.exchangeCart = (profile.exchange_cart || []).filter((id) => liveIds.has(id));
+  state.myItems = (profile.my_items || []).filter((id) => liveUnits.has(id));
   state.flash = profile.flash;
   state.lastPouchId = profile.last_pouch_id;
   state.orderCounter = profile.order_counter;
@@ -783,8 +797,9 @@ export async function persistProductAndUnits(state, productId) {
       stone: p.stone,
       points: p.points,
       price: p.price,
+      ...(p.image ? { image: p.image } : {}),
     },
-    ['sku'],
+    ['sku', 'image'],
   );
   await persistUnits((state.units || []).filter((u) => u.modelId === productId));
 }
@@ -838,11 +853,12 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
         category: p.category,
         metal: p.metal,
         stone: p.stone,
-        points: p.points,
-        price: p.price,
-      },
-      ['sku'],
-    );
+      points: p.points,
+      price: p.price,
+      ...(p.image ? { image: p.image } : {}),
+    },
+    ['sku', 'image'],
+  );
   }
 
   for (const u of state.units.filter((x) => !x.demoOnly)) {
