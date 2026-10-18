@@ -363,4 +363,94 @@ export async function updateRegistrationStep(userId, patch) {
   await db.updateRegistration(userId, patch);
 }
 
+export async function createStaffCustomer(body = {}) {
+  const { normalizeSignupEmail, normalizeSignupPhone } = await import('./contactIdentity.js');
+  const fullName = String(body.name || '').trim();
+  const email = normalizeSignupEmail(body.email);
+  const phone = normalizeSignupPhone(body.phone);
+  const planId = String(body.planId || '').trim();
+  const password = String(body.password || '');
+  if (!fullName) {
+    const err = new Error('יש למלא שם');
+    err.status = 400;
+    throw err;
+  }
+  if (!planId) {
+    const err = new Error('יש לבחור מסלול');
+    err.status = 400;
+    throw err;
+  }
+  if (password.length < 6) {
+    const err = new Error('סיסמה זמנית של 6 תווים לפחות');
+    err.status = 400;
+    throw err;
+  }
+
+  const live = store.getMutableState();
+  const plan = (live.plans || []).find((p) => p.id === planId);
+  if (!plan) {
+    const err = new Error('המסלול לא נמצא');
+    err.status = 400;
+    throw err;
+  }
+
+  if (!isDbEnabled) {
+    const row = {
+      id: `manual-${Date.now()}`,
+      name: fullName,
+      phone,
+      email,
+      planId,
+      plan: planId,
+      status: 'פעיל',
+      joined: new Date().toLocaleDateString('he-IL'),
+      joinedAt: new Date().toISOString(),
+      points: `0/${plan.points}`,
+    };
+    live.seedCustomers = [row, ...(live.seedCustomers || [])];
+    return row;
+  }
+
+  const { getSupabase } = await import('./supabase.js');
+  const supabase = getSupabase();
+  await db.assertUniqueContact({ email, phone });
+  const { data, error } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { full_name: fullName, phone: phone || '' },
+  });
+  if (error) throwHe(error, 400, 'יצירת הלקוחה נכשלה');
+
+  const now = new Date().toISOString();
+  await db.ensureUserProfile(data.user.id, {
+    full_name: fullName,
+    email,
+    phone,
+    subscribed: true,
+    plan_id: planId,
+    points_balance: plan.points,
+    credits: 0,
+    registration_step: 7,
+    terms_accepted_at: now,
+  });
+  const { error: updateError } = await supabase
+    .from('profiles')
+    .update({
+      full_name: fullName,
+      email,
+      phone,
+      subscribed: true,
+      plan_id: planId,
+      points_balance: plan.points,
+      registration_step: 7,
+      terms_accepted_at: now,
+      updated_at: now,
+    })
+    .eq('id', data.user.id);
+  if (updateError) throwHe(updateError, 502, 'שמירת הלקוחה נכשלה');
+  live.staffCustomers = await db.loadStaffCustomers('admin');
+  return { id: data.user.id };
+}
+
 export { isDbEnabled };

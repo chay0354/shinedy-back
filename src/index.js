@@ -370,6 +370,19 @@ app.patch(
       };
       st.registration.paymentMethodAdded = true;
     }
+    if (patch.address && typeof patch.address === 'object') {
+      const next = {
+        ...(st.address || {}),
+        ...patch.address,
+        street: String(patch.address.street ?? st.address?.street ?? '').trim(),
+        houseNo: String(patch.address.houseNo ?? st.address?.houseNo ?? '').trim(),
+        apt: String(patch.address.apt ?? st.address?.apt ?? '').trim(),
+        city: String(patch.address.city ?? st.address?.city ?? '').trim(),
+        zip: String(patch.address.zip ?? st.address?.zip ?? '').trim(),
+      };
+      st.address = next;
+      st.registration.address = next;
+    }
     return store.getSnapshot();
   }, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
@@ -588,6 +601,29 @@ app.get('/api/admin/favorites', favoritesRoute(async (req) => {
   await requireUser(req, ['admin', 'warehouse']);
   return { favorites: await db.listAllFavorites() };
 }));
+
+app.get(
+  '/api/admin/overview',
+  wrap(async () => {
+    if (!isDbEnabled()) {
+      return { favoriteSaves: 0, abandonedCarts: 0, contactPending: 0, liveVisitors: 0 };
+    }
+    return db.adminDashboardExtras();
+  }, { staff: true, staffRoles: ['admin', 'warehouse'] }),
+);
+
+app.post(
+  '/api/admin/customers',
+  wrap(async (req) => {
+    await session.createStaffCustomer(req.body || {});
+    return store.getSnapshot();
+  }, { staff: true, staffRoles: ['admin'] }),
+);
+
+app.patch(
+  '/api/admin/membership-terms',
+  wrap((req) => store.updateMembershipTerms(req.body?.terms), { staff: true, staffRoles: ['admin'] }),
+);
 
 app.get(
   '/api/admin/customers/:id/id-document',

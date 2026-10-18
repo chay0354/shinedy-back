@@ -283,6 +283,22 @@ export async function listAllFavorites() {
   });
 }
 
+export async function adminDashboardExtras() {
+  const client = getSupabase();
+  const favs = await listAllFavorites();
+  const { data: profiles, error } = await client.from('profiles').select('cart, role');
+  if (error) throw error;
+  const abandonedCarts = (profiles || []).filter(
+    (p) => resolveUserRole(p) === 'customer' && Array.isArray(p.cart) && p.cart.length > 0,
+  ).length;
+  return {
+    favoriteSaves: favs.length,
+    abandonedCarts,
+    contactPending: 0,
+    liveVisitors: 0,
+  };
+}
+
 export async function refreshOpsIntoState(state) {
   const [unitsRes, ordersRes, pouchesRes] = await Promise.all([
     getSupabase().from('units').select('*'),

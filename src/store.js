@@ -1,4 +1,5 @@
 import { isDbEnabled } from './supabase.js';
+import { loadMembershipTerms, saveMembershipTerms } from './membershipTerms.js';
 import { attachCourierJob, planRequiresDeliverySignature, resolveCourierJob } from './courierJob.js';
 import { hasIdDocument, maskNationalId } from './idVault.js';
 
@@ -101,6 +102,7 @@ function makeInitialState() {
     myItems: [],
     flash: null,
     orderCounter: 1043,
+    membershipTerms: loadMembershipTerms(),
     plans: [
       { id: 'silver', name: 'מסלול כסף', price: 199, points: 100, maxItems: 2, exchanges: 99, shipping: true, tagline: 'כסף וכסף מצופה זהב · אבני מויסנייט' },
       { id: 'combined', name: 'מסלול משולב', price: 299, points: 170, maxItems: 4, exchanges: 99, shipping: true, tagline: 'כסף וזהב · יהלומי מעבדה קטנים' },
@@ -612,6 +614,7 @@ export function getSnapshot() {
     cart: state.cart.map((id) => product(id)).filter(Boolean),
     cartTotal: cartPoints(),
     remaining,
+    membershipTerms: state.membershipTerms || [],
     plans: state.plans.map((p) => ({
       ...p,
       shippingLabel: p.shipping ? 'משלוח כלול' : 'משלוח בתשלום',
@@ -1561,6 +1564,11 @@ export function pouchItemQC(pouchId, unitId, result) {
   } else {
     state.flash = result === 'ok' ? 'הפריט הועבר לניקוי' : 'הפריט הועבר לתיקון';
   }
+  return getSnapshot();
+}
+
+export function updateMembershipTerms(lines) {
+  state.membershipTerms = saveMembershipTerms(lines);
   return getSnapshot();
 }
 
