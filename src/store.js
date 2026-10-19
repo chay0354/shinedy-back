@@ -33,6 +33,21 @@ function orderOwnsUnit(order, unitId) {
 }
 const CREDIT_PCT = 10;
 const DAY_MS = 86400000;
+const EXTRA_SHIP_FEE = 65;
+const SHIP_FREE_WINDOW_MS = 60 * DAY_MS;
+const BILLING_PERIOD_MS = 30 * DAY_MS;
+const SHIPMENT_TYPES = new Set(['הזמנה', 'הזמנה ראשונה', 'החלפה', 'החזרה']);
+const DELIVERED_STATUSES = new Set(['נשלח', 'נשלחה', 'נמסרה']);
+const BOX_ORDER_TYPES = new Set(['הזמנה', 'הזמנה ראשונה', 'החלפה']);
+// Ledger keys live inside profile.address; never let a client payload overwrite them.
+const ADDRESS_LEDGER_KEYS = ['charges', 'shippingCharges', 'pauses', 'billingStart', 'canceledAt', 'lastPlanId'];
+
+export function clientAddress(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const next = { ...raw };
+  for (const key of ADDRESS_LEDGER_KEYS) delete next[key];
+  return next;
+}
 
 const STATUS_STYLE = {
   זמין: { bg: '#EDF3EA', fg: '#3E5C3F' },
@@ -62,6 +77,72 @@ export function normalizePayment(raw) {
     holder: String(raw.holder || '').trim(),
     last4,
     expiry: String(raw.expiry || '').trim(),
+  };
+}
+
+function expiryIsValid(expiry, now = new Date()) {
+  const m = /^(\d{1,2})\s*\/\s*(\d{2}|\d{4})$/.exec(String(expiry || '').trim());
+  if (!m) return false;
+  const month = Number(m[1]);
+  const year = m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2]);
+  if (month < 1 || month > 12) return false;
+  return new Date(year, month, 1) > now;
+}
+
+/** A card the server can charge: a gateway token in DB mode, any valid card in demo mode. */
+function paymentIsUsable(raw, now = new Date()) {
+  const payment = normalizePayment(raw);
+  if (!payment || !expiryIsValid(payment.expiry, now)) return false;
+  return !isDbEnabled || Boolean(raw.token && raw.tokef);
+}
+
+function paymentError(message) {
+  const err = new Error(message);
+  err.status = 402;
+  return err;
+}
+
+/** What the browser may see of the saved card. */
+function paymentView(raw) {
+  const payment = normalizePayment(raw);
+  if (!payment) return null;
+  return { ...payment, onFile: paymentIsUsable(raw) };
+}
+
+export function savedCard() {
+  return paymentIsUsable(state.payment) ? state.payment : null;
+}
+
+/** Stores the card returned by the payment gateway (token + expiry), replacing the old one. */
+export function setCardFromGateway({ token, tokef, last4, holder, holderId }) {
+  const yymm = String(tokef || '').padStart(4, '0');
+  state.payment = {
+    holder: String(holder || state.registration?.fullName || state.currentUserName || '').trim(),
+    last4: String(last4 || token || '').replace(/\D/g, '').slice(-4),
+    expiry: `${yymm.slice(2, 4)}/${yymm.slice(0, 2)}`,
+    token: String(token || ''),
+    tokef: yymm,
+    holderId: /^\d{9}$/.test(String(holderId || '')) ? String(holderId) : '',
+  };
+  if (!state.registration) state.registration = {};
+  state.registration.paymentMethodAdded = true;
+  retryFailedCharges();
+}
+
+/** Name and contact details sent to the gateway with a charge. */
+export function billingContact() {
+  const full = String(state.registration?.fullName || state.currentUserName || '').trim();
+  const [firstName, ...rest] = full.split(/\s+/);
+  return {
+    firstName: firstName || '',
+    lastName: rest.join(' '),
+    email: state.registration?.email || '',
+    cell: state.registration?.phone || '',
+    street: [state.address?.street, state.address?.houseNo].filter(Boolean).join(' '),
+    city: state.address?.city || '',
+    idNumber: /^\d{9}$/.test(String(state.registration?.nationalId || ''))
+      ? state.registration.nationalId
+      : '',
   };
 }
 
@@ -244,6 +325,8 @@ export function clearUserSession() {
   state.address = {};
   state.payment = null;
   state.shippingCharges = [];
+  state.deletedOrderIds = [];
+  state.deletedPouchIds = [];
   state.units = state.units.filter((u) => !u.demoOnly && !u.ownerUserId);
 }
 
@@ -340,10 +423,10 @@ function reconcileCustomerUnits() {
     const purchaseOrder = state.orders.find(
       (o) =>
         o.userId === state.currentUserId &&
-        o.type === 'הזמנה' &&
+        BOX_ORDER_TYPES.has(o.type || 'הזמנה') &&
         (o.items || []).includes(uid),
     );
-    const delivered = purchaseOrder?.status === 'נשלח';
+    const delivered = DELIVERED_STATUSES.has(purchaseOrder?.status);
     const inReturnFlow = u.status === 'בדרך חזרה' || u.status === 'בניקוי' || u.status === 'בתיקון';
 
     if (inReturnFlow) {
@@ -560,6 +643,7 @@ export function getSnapshot() {
   pruneMyItems();
   reconcileCustomerUnits();
   pruneExchangeReturns();
+  accrueSubscriptionCharges();
   const plan = currentPlan();
   const pointsTotal = state.planId ? plan.points : 0;
   const remaining = remainingPoints();
@@ -584,7 +668,7 @@ export function getSnapshot() {
           ...state.registration,
           name: state.registration.name || state.registration.fullName || state.currentUserName,
           address: state.address || state.registration.address || {},
-          payment: normalizePayment(state.payment || state.registration.payment),
+          payment: paymentView(state.payment),
           subscribedAt: state.subscribedAt,
           idDocumentUploaded: Boolean(
             state.registration.idDocumentUploaded || hasIdDocument(state.registration.idDocumentUrl),
@@ -767,7 +851,14 @@ export function getSnapshot() {
       : undefined,
     shippingCharges: state.shippingCharges || state.address?.shippingCharges || [],
     extraShipFee: EXTRA_SHIP_FEE,
-    payment: normalizePayment(state.payment || state.registration?.payment),
+    nextShipFee: staff ? undefined : nextShipmentFee(),
+    nextFreeShipmentAt: staff ? undefined : nextFreeShipmentAt(),
+    charges: staff ? undefined : [...chargesLedger()].sort((a, b) => String(b.at).localeCompare(String(a.at))),
+    paymentUsable: staff ? undefined : !isDbEnabled || paymentIsUsable(state.payment),
+    payment: paymentView(state.payment),
+    billingIssue: staff
+      ? undefined
+      : chargesLedger().some((c) => c.status === 'נכשל' || (c.status === 'לגבייה' && c.attempts > 0)),
     lastPouch: (() => {
       if (!state.lastPouchId) return null;
       const p = state.returnPouches.find((x) => x.id === state.lastPouchId);
@@ -819,6 +910,7 @@ function seedDemoOwnedJewelry() {
   const owned = [];
 
   for (const spec of DEMO_OWNED_UNITS) {
+    if (!product(spec.modelId)) continue;
     let u = unit(spec.id);
     if (!u) {
       u = {
@@ -844,23 +936,50 @@ function seedDemoOwnedJewelry() {
   return owned;
 }
 
-export function subscribe(planId) {
+/**
+ * Starts (or restarts) a membership. Customers must arrive with the first month
+ * already charged (`paid`); staff can reactivate and let billing collect it.
+ */
+export function subscribe(planId, { byStaff = false, paid = null } = {}) {
   const plan = resolvePlan(planId);
   if (!plan) throw new Error('המסלול לא נמצא');
   if (state.subscribed && state.planId) {
     return changePlan(plan.id);
   }
+  if (isDbEnabled && !byStaff && !paid) {
+    throw paymentError('כדי להפעיל מנוי צריך לשלם את החודש הראשון');
+  }
+  const now = new Date().toISOString();
   state.subscribed = true;
   state.planId = plan.id;
-  state.pointsBalance = plan.points;
-  state.subscribedAt = state.subscribedAt || new Date().toISOString();
-  if (state.registration) state.registration.step = 7;
+  state.pointsBalance = Math.max(0, plan.points - pointsTiedUpInJewelry());
+  state.subscribedAt = state.subscribedAt || now;
+  state.address = { ...(state.address || {}), billingStart: now, canceledAt: null };
+  if (state.registration) {
+    state.registration.step = 7;
+    state.registration.canceledAt = null;
+    state.registration.suspended = false;
+    state.registration.suspendedAt = null;
+  }
   if (!isDbEnabled && (!state.myItems || state.myItems.length === 0)) {
     seedDemoOwnedJewelry();
     state.credits = 180;
   }
+  accrueSubscriptionCharges();
+  if (paid) {
+    const first = chargesLedger().find(
+      (c) => c.kind === 'subscription' && c.periodStart === now && c.status === 'לגבייה',
+    );
+    if (first) markChargePaid(first.id, paid);
+  }
   state.flash = null;
   return getSnapshot();
+}
+
+export function planPrice(planId) {
+  const plan = resolvePlan(planId);
+  if (!plan) throw new Error('המסלול לא נמצא');
+  return { id: plan.id, name: plan.name, price: Number(plan.price) || 0 };
 }
 
 export function changePlan(planId) {
@@ -878,13 +997,11 @@ export function changePlan(planId) {
     );
   }
   const prev = currentPlan();
-  state.planId = planId;
+  state.planId = plan.id;
   state.pointsBalance = Math.max(0, plan.points - held);
   state.flash = `המסלול שלך עודכן מ-${prev.name} ל-${plan.name} ✓`;
   return getSnapshot();
 }
-
-const EXTRA_SHIP_FEE = 65;
 
 function parseWhen(value) {
   if (!value) return null;
@@ -898,30 +1015,162 @@ function parseWhen(value) {
   return null;
 }
 
-function billingPeriod(now = Date.now()) {
-  const origin = parseWhen(state.subscribedAt) || now;
-  const idx = Math.max(0, Math.floor((now - origin) / (30 * DAY_MS)));
-  const start = origin + idx * 30 * DAY_MS;
-  return { start, end: start + 30 * DAY_MS };
+function chargesLedger() {
+  return Array.isArray(state.address?.charges) ? state.address.charges : [];
 }
 
-function hadMovementThisPeriod() {
-  const { start, end } = billingPeriod();
-  const inWindow = (value) => {
-    const t = parseWhen(value);
-    return Boolean(t && t >= start && t < end);
+function addCharge(entry) {
+  const charge = {
+    id: `CHG-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+    at: new Date().toISOString(),
+    status: 'לגבייה',
+    ...entry,
   };
-  const shipTypes = new Set(['הזמנה', 'הזמנה ראשונה', 'החלפה', 'החזרה']);
-  const orderHit = state.orders.some((o) => {
-    if (!isMyOrder(o)) return false;
-    if (!shipTypes.has(o.type || 'הזמנה')) return false;
-    return inWindow(o.courierConfirmedAt) || inWindow(o.date) || inWindow(o.createdAt);
+  state.address = { ...(state.address || {}), charges: [...chargesLedger(), charge] };
+  return charge;
+}
+
+function updateCharge(id, patch) {
+  state.address = {
+    ...(state.address || {}),
+    charges: chargesLedger().map((c) => (c.id === id ? { ...c, ...patch } : c)),
+  };
+}
+
+export function markChargePaid(id, paid = {}) {
+  updateCharge(id, {
+    status: 'שולם',
+    paidAt: new Date().toISOString(),
+    transId: paid.transId || null,
+    method: paid.method || null,
+    lastError: null,
   });
-  const pouchHit = state.returnPouches.some((p) => {
-    if (!isMyPouch(p)) return false;
-    return inWindow(p.courierConfirmedAt) || inWindow(p.createdAt);
+}
+
+const MAX_CHARGE_ATTEMPTS = 3;
+
+export function markChargeFailed(id, message) {
+  const charge = chargesLedger().find((c) => c.id === id);
+  const attempts = (Number(charge?.attempts) || 0) + 1;
+  updateCharge(id, {
+    attempts,
+    lastError: String(message || '').slice(0, 200),
+    lastAttemptAt: new Date().toISOString(),
+    status: attempts >= MAX_CHARGE_ATTEMPTS ? 'נכשל' : 'לגבייה',
   });
-  return orderHit || pouchHit;
+}
+
+export function markChargeRefunded(id, ok) {
+  updateCharge(id, ok ? { status: 'בוטל', refundedAt: new Date().toISOString() } : { refundTried: true });
+}
+
+/** Gives charges that hit the retry limit another round (new card, or staff asked). */
+export function retryFailedCharges() {
+  state.address = {
+    ...(state.address || {}),
+    charges: chargesLedger().map((c) => (c.status === 'נכשל' ? { ...c, status: 'לגבייה', attempts: 0 } : c)),
+  };
+}
+
+/** Charges the server should try to collect now. */
+export function collectibleCharges() {
+  return chargesLedger().filter(
+    (c) => c.status === 'לגבייה' && Number(c.amount) > 0 && (Number(c.attempts) || 0) < MAX_CHARGE_ATTEMPTS,
+  );
+}
+
+/** Paid charges that were cancelled and still need their money returned. */
+export function chargesToRefund() {
+  return chargesLedger().filter((c) => c.status === 'להחזר' && c.transId && !c.refundTried);
+}
+
+function voidChargesForOrder(orderId) {
+  if (!orderId) return;
+  state.address = {
+    ...(state.address || {}),
+    charges: chargesLedger().map((c) => {
+      if (c.orderId !== orderId || c.status === 'בוטל') return c;
+      return { ...c, status: c.status === 'שולם' ? 'להחזר' : 'בוטל' };
+    }),
+  };
+  state.shippingCharges = (state.shippingCharges || []).filter((c) => c.relatedOrderId !== orderId);
+  state.address.shippingCharges = state.shippingCharges;
+  if (state.registration) state.registration.shippingCharges = state.shippingCharges;
+}
+
+function isPausedAt(t) {
+  const pauses = Array.isArray(state.address?.pauses) ? state.address.pauses : [];
+  return pauses.some((p) => {
+    const from = parseWhen(p.from);
+    const to = parseWhen(p.to);
+    return from !== null && t >= from && (to === null || t < to);
+  });
+}
+
+/**
+ * Records the monthly fee for every 30-day period since billing started.
+ * Existing subscribers without a billing start are billed from their next renewal,
+ * so the ledger never invents past debt.
+ */
+export function accrueSubscriptionCharges(now = Date.now()) {
+  if (!state.currentUserId && isDbEnabled) return;
+  if (isStaffViewer() || !state.subscribed || !state.planId) return;
+  const plan = currentPlan();
+  if (!plan?.price) return;
+  let origin = parseWhen(state.address?.billingStart);
+  if (origin === null) {
+    const joined = parseWhen(state.subscribedAt) ?? now;
+    const elapsed = Math.max(0, now - joined);
+    origin = joined + Math.ceil(elapsed / BILLING_PERIOD_MS) * BILLING_PERIOD_MS;
+    state.address = { ...(state.address || {}), billingStart: new Date(origin).toISOString() };
+  }
+  const billed = new Set(
+    chargesLedger().filter((c) => c.kind === 'subscription').map((c) => c.periodStart),
+  );
+  const fresh = [];
+  for (let start = origin, n = 0; start <= now && n < 36; start += BILLING_PERIOD_MS, n += 1) {
+    const key = new Date(start).toISOString();
+    if (billed.has(key) || isPausedAt(start)) continue;
+    fresh.push({
+      id: `SUB-${key}`,
+      kind: 'subscription',
+      amount: Number(plan.price) || 0,
+      description: `דמי מנוי חודשיים · ${plan.name}`,
+      periodStart: key,
+      at: key,
+      status: 'לגבייה',
+    });
+  }
+  if (fresh.length) {
+    state.address = { ...(state.address || {}), charges: [...chargesLedger(), ...fresh] };
+  }
+}
+
+/** When the customer last used her included shipment. The first box is part of joining. */
+function lastIncludedShipmentAt() {
+  const paid = new Set((state.shippingCharges || []).map((c) => c.relatedOrderId).filter(Boolean));
+  let last = null;
+  for (const o of state.orders) {
+    if (!isMyOrder(o)) continue;
+    const type = o.type || 'הזמנה';
+    if (!SHIPMENT_TYPES.has(type) || type === 'הזמנה ראשונה') continue;
+    if (paid.has(o.id)) continue;
+    const t = parseWhen(o.date);
+    if (t !== null && (last === null || t > last)) last = t;
+  }
+  return last;
+}
+
+/** One round trip every two months is included; each extra one costs EXTRA_SHIP_FEE. */
+function nextShipmentFee(now = Date.now()) {
+  const last = lastIncludedShipmentAt();
+  return last !== null && now - last < SHIP_FREE_WINDOW_MS ? EXTRA_SHIP_FEE : 0;
+}
+
+function nextFreeShipmentAt() {
+  const last = lastIncludedShipmentAt();
+  if (last === null || Date.now() - last >= SHIP_FREE_WINDOW_MS) return null;
+  return new Date(last + SHIP_FREE_WINDOW_MS).toISOString();
 }
 
 function itemsToCollect() {
@@ -931,19 +1180,25 @@ function itemsToCollect() {
   });
 }
 
-function recordShipFee(reason, relatedOrderId) {
+function recordShipFee(reason, relatedOrderId, paid = null) {
   const charge = {
     id: `FEE-${Date.now()}`,
     amount: EXTRA_SHIP_FEE,
     reason,
     at: new Date().toISOString(),
     relatedOrderId: relatedOrderId || null,
-    periodStart: new Date(billingPeriod().start).toISOString(),
   };
   state.shippingCharges = [...(state.shippingCharges || []), charge];
   if (!state.registration) state.registration = {};
   state.registration.shippingCharges = state.shippingCharges;
   state.address = { ...(state.address || {}), shippingCharges: state.shippingCharges };
+  const entry = addCharge({
+    kind: 'shipping',
+    amount: EXTRA_SHIP_FEE,
+    description: reason,
+    orderId: relatedOrderId || null,
+  });
+  if (paid) markChargePaid(entry.id, paid);
   return charge;
 }
 
@@ -981,6 +1236,7 @@ function startEndPickup(endReason) {
       qr,
       pouchId,
       endReason,
+      newItems: [{ kind: 'end-pickup', reason: endReason }],
     },
     'pickup',
     courierOpts(),
@@ -1011,16 +1267,17 @@ function startEndPickup(endReason) {
 }
 
 function closeSubscription(mode) {
-  const movement = hadMovementThisPeriod();
+  accrueSubscriptionCharges();
+  const feeDue = nextShipmentFee();
   const endReason = mode === 'suspend' ? 'הקפאה' : 'ביטול';
-  const { pickupOrder, collected } = startEndPickup(endReason);
+  const { pickupOrder, collected, reused } = startEndPickup(endReason);
   let fee = null;
-  if (movement) {
+  if (feeDue && pickupOrder && !reused) {
     fee = recordShipFee(
       mode === 'suspend'
-        ? 'הקפאת מנוי אחרי משלוח או החזרה בחודש המנוי'
-        : 'ביטול מנוי אחרי משלוח או החזרה בחודש המנוי',
-      pickupOrder?.id,
+        ? 'איסוף בהקפאת מנוי, אחרי שנוצל המשלוח הכלול'
+        : 'איסוף בביטול מנוי, אחרי שנוצל המשלוח הכלול',
+      pickupOrder.id,
     );
   }
   state.cart = [];
@@ -1032,15 +1289,23 @@ function closeSubscription(mode) {
     ? ' שליח יגיע לאסוף את התכשיטים בימים הקרובים.'
     : '';
   if (mode === 'suspend') {
-    state.registration.suspendedAt = new Date().toISOString();
+    const at = new Date().toISOString();
+    state.registration.suspendedAt = at;
     state.registration.suspended = true;
+    const pauses = Array.isArray(state.address?.pauses) ? state.address.pauses : [];
+    state.address = { ...(state.address || {}), pauses: [...pauses, { from: at, to: null }] };
     state.flash = `המנוי הוקפא.${pickupNote}${feeNote}`;
   } else {
+    const lastPlanId = state.planId;
     state.subscribed = false;
     state.planId = null;
     state.pointsBalance = 0;
     state.registration.canceledAt = new Date().toISOString();
-    state.address = { ...(state.address || {}), canceledAt: state.registration.canceledAt };
+    state.address = {
+      ...(state.address || {}),
+      canceledAt: state.registration.canceledAt,
+      lastPlanId,
+    };
     state.flash = `המנוי בוטל.${pickupNote}${feeNote}`;
   }
   return {
@@ -1066,6 +1331,13 @@ export function resumeOwnSubscription() {
     state.registration.suspendedAt = null;
     state.registration.suspended = false;
   }
+  const at = new Date().toISOString();
+  const pauses = Array.isArray(state.address?.pauses) ? state.address.pauses : [];
+  state.address = {
+    ...(state.address || {}),
+    pauses: pauses.map((p) => (p.to ? p : { ...p, to: at })),
+  };
+  accrueSubscriptionCharges();
   state.flash = 'המנוי הופעל מחדש ✓';
   return getSnapshot();
 }
@@ -1073,6 +1345,37 @@ export function resumeOwnSubscription() {
 export function cancelSubscription() {
   if (!state.subscribed && !isSuspended()) throw new Error('אין מנוי פעיל');
   return closeSubscription('cancel');
+}
+
+/** Back-office actions run against a customer session loaded by the server. */
+export function staffSubscriptionAction(action, planId) {
+  if (action === 'suspend') return suspendOwnSubscription();
+  if (action === 'resume') return resumeOwnSubscription();
+  if (action === 'cancel') return cancelSubscription();
+  if (action === 'reactivate') {
+    if (state.subscribed && isSuspended()) return resumeOwnSubscription();
+    if (state.subscribed) throw new Error('המנוי כבר פעיל');
+    const target = planId || state.address?.lastPlanId;
+    if (!target) throw new Error('יש לבחור מסלול להפעלה מחדש');
+    return subscribe(target, { byStaff: true });
+  }
+  throw new Error('פעולה לא מוכרת');
+}
+
+export function staffUpdateCustomerDetails(patch = {}) {
+  if (!state.registration) state.registration = {};
+  const name = String(patch.name ?? '').trim();
+  const phone = String(patch.phone ?? '').trim();
+  if (name) {
+    state.registration.fullName = name;
+    state.currentUserName = name;
+  }
+  if (phone) state.registration.phone = phone;
+  if (patch.address && typeof patch.address === 'object') {
+    state.address = { ...(state.address || {}), ...clientAddress(patch.address) };
+    state.registration.address = state.address;
+  }
+  return getSnapshot();
 }
 
 export function login() {
@@ -1140,6 +1443,7 @@ export function logout() {
 
 export function addToCart(productId) {
   if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
+  if (!state.subscribed || !state.planId) throw new Error('כדי להזמין תכשיטים צריך מנוי פעיל');
   if (state.cart.includes(productId)) return getSnapshot();
   const p = product(productId);
   if (!p) throw new Error('התכשיט לא נמצא');
@@ -1214,11 +1518,28 @@ function linkReturnPouch(order, returnItems) {
   order.returnItems = returnItems;
 }
 
-export function confirmOrder(payload = {}) {
+/** Validates the box and returns what confirming it would cost, without changing anything. */
+export function quoteOrder() {
   if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן להזמין');
   if (hasOpenReturn()) throw new Error('לא ניתן לבצע כרגע החלפה חדשה — ההחזרה מההחלפה הקודמת עדיין לא הושלמה');
+  if (!state.subscribed || !state.planId) throw new Error('כדי להזמין תכשיטים צריך מנוי פעיל');
   if (!state.cart.length) throw new Error('הסל ריק');
   if (remainingPoints() < 0) throw new Error('חריגה ממכסת הנקודות');
+  const soldOut = state.cart.filter((pid) => availableUnitsForProduct(pid).length === 0);
+  if (soldOut.length) {
+    const names = soldOut.map((pid) => product(pid)?.name || pid).join(', ');
+    throw new Error(`${names} אזל מהמלאי בינתיים. הסירי מהקופסה ונסי שוב`);
+  }
+  const orderType =
+    state.exchangeReturns.length > 0 ? 'החלפה' : hasPriorBoxOrder() ? 'הזמנה' : 'הזמנה ראשונה';
+  const shipFee = orderType === 'הזמנה ראשונה' ? 0 : nextShipmentFee();
+  return { orderType, shipFee };
+}
+
+export function confirmOrder(payload = {}, { paid = null } = {}) {
+  const { orderType, shipFee } = quoteOrder();
+  if (shipFee && isDbEnabled && !paid) throw paymentError('יש לשלם את דמי המשלוח כדי להמשיך');
+  const returnsInOrder = [...state.exchangeReturns];
   const notes = String(payload.notes ?? payload.address?.notes ?? '').trim();
   state.address = { ...(state.address || {}), notes };
   if (state.registration) {
@@ -1240,9 +1561,9 @@ export function confirmOrder(payload = {}) {
     (sum, uid) => sum + product(unit(uid).modelId).points,
     0,
   );
-  const returnItems = [...state.exchangeReturns];
+  const returnItems = returnsInOrder;
   const isExchange = returnItems.length > 0;
-  const type = isExchange ? 'החלפה' : hasPriorBoxOrder() ? 'הזמנה' : 'הזמנה ראשונה';
+  const type = orderType;
   const newOrder = attachCourierJob(
     {
       id: `ORD-${state.orderCounter}${userIdSuffix()}`,
@@ -1252,7 +1573,7 @@ export function confirmOrder(payload = {}) {
       items: orderItems,
       returnItems,
       status: 'ליקוט',
-      date: 'היום',
+      date: new Date().toISOString(),
     },
     isExchange ? 'both' : 'delivery',
     courierOpts(),
@@ -1264,30 +1585,54 @@ export function confirmOrder(payload = {}) {
   state.pointsBalance -= spent;
   state.orders.push(newOrder);
   state.orderCounter += 1;
-  state.flash = isExchange
+  if (shipFee) {
+    recordShipFee(
+      isExchange ? 'משלוח החלפה נוסף בתוך חודשיים' : 'משלוח נוסף בתוך חודשיים',
+      newOrder.id,
+      paid,
+    );
+  }
+  const feeNote = shipFee ? ` · דמי משלוח ₪${shipFee}` : '';
+  state.flash = (isExchange
     ? 'החלפה בדרך — משלוח ואיסוף ✓'
     : type === 'הזמנה ראשונה'
       ? 'ההזמנה הראשונה בדרך — משלוח ✓'
-      : 'ההזמנה בדרך — משלוח ✓';
+      : 'ההזמנה בדרך — משלוח ✓') + feeNote;
   return getSnapshot();
 }
 
-export function purchaseItem(payload = {}) {
+/** Validates a purchase and prices it (credit applied) without changing anything. */
+export function quotePurchase(payload = {}) {
   const pid = payload.productId || payload.pid;
   const serial = payload.serial || null;
   const p = product(pid);
   if (!p) throw new Error('לא נמצא');
   const guest = !state.currentUserId;
   const buyer = payload.buyer || null;
-  if (guest && !(buyer && buyer.name)) {
+  if (guest && !(buyer && String(buyer.name || '').trim())) {
     throw new Error('צריך להתחבר או למלא פרטים');
   }
-
-  let target = serial ? unit(serial) : null;
-  if (serial && state.currentUserId && !state.myItems.includes(serial)) {
-    throw new Error('הפריט לא שייך לחשבון');
+  if (guest && !String(buyer.phone || '').trim() && !String(buyer.email || '').trim()) {
+    throw new Error('צריך למלא טלפון או אימייל ליצירת קשר');
   }
-  if (!target) target = availableUnitsForProduct(pid)[0] || null;
+  const address = { ...(state.address || {}), ...clientAddress(payload.address) };
+  if (!serial && !(address.street && address.houseNo && address.city)) {
+    throw new Error('צריך למלא רחוב, מספר בית ועיר למשלוח');
+  }
+
+  let target = null;
+  if (serial) {
+    if (guest) throw new Error('כדי לקנות תכשיט שנמצא אצלך צריך להתחבר');
+    target = unit(serial);
+    if (!target || !state.myItems.includes(serial) || target.modelId !== p.id) {
+      throw new Error('הפריט לא שייך לחשבון');
+    }
+    if (target.status !== 'אצל לקוחה') {
+      throw new Error('אפשר לקנות רק תכשיט שנמצא אצלך, לא בדרך או בהחזרה');
+    }
+  } else {
+    target = availableUnitsForProduct(pid)[0] || null;
+  }
   if (!target) throw new Error('אין יחידה זמינה לרכישה');
 
   const price = Number(p.price) || 0;
@@ -1301,14 +1646,16 @@ export function purchaseItem(payload = {}) {
     ? 0
     : Math.min(maxCredit, Math.max(0, Number.isFinite(wanted) ? wanted : maxCredit));
   const toPay = Math.max(0, price - creditUsed);
+  return { product: p, target, serial, guest, buyer, price, creditUsed, toPay, address };
+}
 
-  const address = { ...(state.address || {}), ...(payload.address || {}) };
+export function purchaseItem(payload = {}, { paid = null } = {}) {
+  const { product: p, target, serial, guest, buyer, price, creditUsed, toPay, address } =
+    quotePurchase(payload);
+  if (toPay > 0 && isDbEnabled && !paid) throw paymentError('יש להשלים את התשלום כדי לרכוש');
+  const payment = paid?.card ? normalizePayment(paid.card) : normalizePayment(state.payment);
   if (!guest && payload.saveAddress && payload.address) {
-    state.address = { ...address };
-  }
-  const payment = normalizePayment(payload.payment) || normalizePayment(state.payment);
-  if (!guest && payload.savePayment && normalizePayment(payload.payment)) {
-    state.payment = normalizePayment(payload.payment);
+    state.address = { ...(state.address || {}), ...clientAddress(payload.address) };
   }
   if (!guest) {
     state.creditsUsed = (state.creditsUsed || 0) + creditUsed;
@@ -1332,7 +1679,8 @@ export function purchaseItem(payload = {}) {
 
   const needsShipping = !serial;
   state.purchaseCounter = (state.purchaseCounter || 0) + 1;
-  const id = `PUR-${new Date().getFullYear()}-${String(state.purchaseCounter).padStart(4, '0')}${userIdSuffix()}`;
+  const scope = guest ? `-G${Date.now().toString(36).toUpperCase()}` : userIdSuffix();
+  const id = `PUR-${new Date().getFullYear()}-${String(state.purchaseCounter).padStart(4, '0')}${scope}`;
   const meta = {
     kind: 'purchase-meta',
     pid: p.id,
@@ -1341,8 +1689,9 @@ export function purchaseItem(payload = {}) {
     price,
     creditUsed,
     paid: toPay,
-    address,
+    address: clientAddress(address),
     payment,
+    transId: paid?.transId || null,
     buyer,
     needsShipping,
     shippedAt: null,
@@ -1362,6 +1711,10 @@ export function purchaseItem(payload = {}) {
   if (needsShipping) attachCourierJob(purchaseOrder, 'delivery', courierOpts());
   state.orders.unshift(purchaseOrder);
   rebuildPurchasesFromOrders();
+  if (!guest && toPay > 0) {
+    const entry = addCharge({ kind: 'purchase', amount: toPay, description: `רכישת ${p.name}`, orderId: id });
+    if (paid) markChargePaid(entry.id, paid);
+  }
   const msg =
     creditUsed > 0
       ? `הרכישה הושלמה! מומשו ₪${Math.round(creditUsed)} קרדיט · לתשלום ₪${Math.round(toPay)}`
@@ -1423,12 +1776,18 @@ function pointsForUnits(unitIds) {
  * - items stay on customer inventory with status בדרך חזרה (shown as בתהליך החזרה)
  * - points are NOT credited yet — only after warehouse scans + confirms
  */
-export function confirmExchange() {
+export function quoteExchange() {
   if (isSuspended()) throw new Error('המנוי מושהה — לא ניתן לבצע החלפה');
   if (hasOpenReturn()) throw new Error('לא ניתן לבצע כרגע החלפה חדשה — ההחזרה מההחלפה הקודמת עדיין לא הושלמה');
   if (!state.exchangeReturns.length) {
     throw new Error('יש לבחור לפחות פריט אחד להחזרה');
   }
+  return { shipFee: nextShipmentFee() };
+}
+
+export function confirmExchange({ paid = null } = {}) {
+  const { shipFee } = quoteExchange();
+  if (shipFee && isDbEnabled && !paid) throw paymentError('יש לשלם את דמי המשלוח כדי להמשיך');
   const returnItems = [...state.exchangeReturns];
   for (const uid of returnItems) {
     const idx = state.units.findIndex((u) => u.id === uid);
@@ -1482,8 +1841,10 @@ export function confirmExchange() {
   state.orderCounter += 1;
   state.exchangeReturns = [];
   state.exchangeCart = [];
+  if (shipFee) recordShipFee('איסוף החזרה נוסף בתוך חודשיים', orderId, paid);
   state.flash =
-    'החזרה נפתחה — נזמין שליח לאיסוף בלבד. הנקודות יזוכו אחרי סריקה במחסן';
+    'החזרה נפתחה — נזמין שליח לאיסוף בלבד. הנקודות יזוכו אחרי סריקה במחסן' +
+    (shipFee ? ` · דמי משלוח ₪${shipFee}` : '');
   return getSnapshot();
 }
 
@@ -1672,9 +2033,7 @@ function stampCourierHandover(order, at = new Date().toISOString()) {
   state.returnPouches = state.returnPouches.map((pouch) => {
     if (pouch.status === 'completed' || pouch.scanned) return pouch;
     const sameOrder = pouch.orderId === order.id || order.pouchId === pouch.id;
-    const sameUser = order.userId && pouch.userId && pouch.userId === order.userId;
-    const sameName = order.customerName && pouch.customerName === order.customerName;
-    if (!sameOrder && !sameUser && !sameName) return pouch;
+    if (!sameOrder) return pouch;
     return { ...pouch, courierConfirmedAt: at };
   });
 }
@@ -1756,9 +2115,17 @@ export function clearLastPouch() {
 export function cancelReturnPouch(pouchId) {
   const pouch = state.returnPouches.find((p) => p.id === pouchId);
   if (!pouch) throw new Error('נרתיק לא נמצא');
-  if (!pouch.demoCustomer) throw new Error('לא ניתן לבטל נרתיק זה');
+  if (!pouch.demoCustomer || !isMyPouch(pouch)) throw new Error('לא ניתן לבטל נרתיק זה');
   if (pouch.status !== 'in_transit') {
     throw new Error('לא ניתן לבטל — הנרתיק כבר נסרק במחסן');
+  }
+  const linked = state.orders.find((o) => o.id === pouch.orderId || o.pouchId === pouchId);
+  const endPickup = pouch.endReason || (linked?.newItems || []).some((x) => x && x.kind === 'end-pickup');
+  if (endPickup) {
+    throw new Error('איסוף של סיום או הקפאת מנוי לא ניתן לביטול כאן. פני לשירות הלקוחות');
+  }
+  if (linked && DELIVERED_STATUSES.has(linked.status)) {
+    throw new Error('השליח כבר יצא. אפשר לתת לו את הנרתיק או לפנות לשירות הלקוחות');
   }
 
   for (const uid of pouch.returnItems) {
@@ -1770,9 +2137,19 @@ export function cancelReturnPouch(pouchId) {
   }
 
   state.returnPouches = state.returnPouches.filter((p) => p.id !== pouchId);
-  state.orders = state.orders.filter(
-    (o) => o.pouchId !== pouchId && o.id !== pouch.orderId,
-  );
+  state.deletedPouchIds = [...(state.deletedPouchIds || []), pouchId];
+  if (linked && (linked.items || []).length > 0) {
+    // Exchange: the new jewelry still ships; only the pickup half is dropped.
+    linked.returnItems = [];
+    linked.pouchId = null;
+    linked.qr = null;
+    linked.type = 'הזמנה';
+    attachCourierJob(linked, 'delivery', courierOpts());
+  } else if (linked) {
+    voidChargesForOrder(linked.id);
+    state.orders = state.orders.filter((o) => o.id !== linked.id);
+    state.deletedOrderIds = [...(state.deletedOrderIds || []), linked.id];
+  }
   if (state.lastPouchId === pouchId) {
     state.lastPouchId = null;
   }

@@ -1,6 +1,38 @@
 import { isDbEnabled, getSupabase } from './supabase.js';
 import { emailsMatch, phonesMatch, signupConflictError } from './contactIdentity.js';
-import { decryptSecret, hasIdDocument, maskNationalId, prepareProfileWrite } from './idVault.js';
+import { decryptSecret, encryptSecret, hasIdDocument, maskNationalId, prepareProfileWrite } from './idVault.js';
+
+function paymentFromRow(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const last4 = String(raw.last4 || '').replace(/\D/g, '').slice(-4);
+  if (last4.length < 4) return null;
+  return {
+    holder: String(raw.holder || '').trim(),
+    last4,
+    expiry: String(raw.expiry || '').trim(),
+    token: raw.token ? decryptSecret(raw.token) : '',
+    tokef: String(raw.tokef || ''),
+    holderId: raw.holderId ? decryptSecret(raw.holderId) : '',
+  };
+}
+
+function paymentToRow(payment) {
+  if (!payment || typeof payment !== 'object') return null;
+  const last4 = String(payment.last4 || '').replace(/\D/g, '').slice(-4);
+  if (last4.length < 4) return null;
+  return {
+    holder: String(payment.holder || '').trim(),
+    last4,
+    expiry: String(payment.expiry || '').trim(),
+    ...(payment.token
+      ? {
+          token: encryptSecret(payment.token),
+          tokef: String(payment.tokef || ''),
+          holderId: payment.holderId ? encryptSecret(payment.holderId) : null,
+        }
+      : {}),
+  };
+}
 
 const OPTIONAL_ORDER_COLS = ['courier_confirmed_at'];
 const OPTIONAL_POUCH_COLS = ['courier_confirmed_at'];
@@ -161,6 +193,7 @@ const STAFF_CUSTOMER_COLS = [
   'terms_accepted_at',
   'id_document_url',
   'points_balance',
+  'payment',
 ];
 
 async function selectStaffProfiles(cols) {
@@ -204,6 +237,11 @@ export async function loadStaffCustomers(viewerRole = 'admin') {
       termsAcceptedAt: row.terms_accepted_at || null,
       address: row.address || {},
       shippingCharges: Array.isArray(row.address?.shippingCharges) ? row.address.shippingCharges : [],
+      charges: Array.isArray(row.address?.charges) ? row.address.charges : [],
+      lastPlanId: row.address?.lastPlanId || null,
+      card: row.payment?.last4
+        ? { last4: row.payment.last4, expiry: row.payment.expiry || '', onFile: Boolean(row.payment.token) }
+        : null,
       canceledAt: row.address?.canceledAt || null,
       suspendedAt: row.suspended_at || null,
       points: String(row.points_balance ?? 0),
@@ -437,13 +475,7 @@ export async function loadUserSession(userId, state) {
   state.shippingCharges = Array.isArray(profile.address?.shippingCharges)
     ? profile.address.shippingCharges
     : [];
-  state.payment = (() => {
-    const raw = profile.payment;
-    if (!raw || typeof raw !== 'object') return null;
-    const last4 = String(raw.last4 || '').replace(/\D/g, '').slice(-4);
-    if (last4.length < 4) return null;
-    return { holder: String(raw.holder || '').trim(), last4, expiry: String(raw.expiry || '').trim() };
-  })();
+  state.payment = paymentFromRow(profile.payment);
   const liveIds = new Set((state.products || []).map((p) => p.id));
   const liveUnits = new Set((state.units || []).map((u) => u.id));
   state.cart = (profile.cart || []).filter((id) => liveIds.has(id));
@@ -530,7 +562,7 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     credits_used: state.creditsUsed || 0,
     subscribed_at: state.subscribedAt,
     address: state.address || {},
-    payment: state.payment || null,
+    payment: paymentToRow(state.payment),
     cart: state.cart,
     exchange_returns: state.exchangeReturns,
     exchange_cart: state.exchangeCart,
@@ -578,21 +610,10 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
     if (fallbackError) throw fallbackError;
   }
 
-  if (state.payment && typeof state.payment === 'object') {
-    const last4 = String(state.payment.last4 || '').replace(/\D/g, '').slice(-4);
-    if (last4.length >= 4) {
-      const { error: payErr } = await client
-        .from('profiles')
-        .update({
-          payment: {
-            holder: String(state.payment.holder || '').trim(),
-            last4,
-            expiry: String(state.payment.expiry || '').trim(),
-          },
-        })
-        .eq('id', userId);
-      if (payErr) console.error('persist payment:', payErr.message || payErr);
-    }
+  const paymentRow = paymentToRow(state.payment);
+  if (profileError && paymentRow) {
+    const { error: payErr } = await client.from('profiles').update({ payment: paymentRow }).eq('id', userId);
+    if (payErr) console.error('persist payment:', payErr.message || payErr);
   }
 
   await persistUserUnits(userId, state);
@@ -654,6 +675,19 @@ export async function persistUserSession(userId, state, userOrders, userPouches,
       },
       OPTIONAL_POUCH_COLS,
     );
+  }
+}
+
+export async function deleteOrdersAndPouches(orderIds = [], pouchIds = []) {
+  const client = getSupabase();
+  if (!client) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
+  if (pouchIds.length) {
+    const { error } = await client.from('return_pouches').delete().in('id', pouchIds);
+    if (error) throw error;
+  }
+  if (orderIds.length) {
+    const { error } = await client.from('orders').delete().in('id', orderIds);
+    if (error) throw error;
   }
 }
 
@@ -900,6 +934,69 @@ export async function persistGlobalCatalog(state, seedOrders, seedPouches) {
       tagline: p.tagline,
     });
   }
+}
+
+function paymentsTableError(error) {
+  if (error?.code === 'PGRST205' || /payments/.test(error?.message || '')) {
+    const err = new Error('מערכת התשלומים עדיין לא הוגדרה במסד (חסרה טבלת payments)');
+    err.status = 503;
+    return err;
+  }
+  return error;
+}
+
+export async function insertPayment(row) {
+  const { error } = await getSupabase().from('payments').insert({
+    ...row,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) throw paymentsTableError(error);
+}
+
+export async function getPayment(id) {
+  const { data, error } = await getSupabase().from('payments').select('*').eq('id', id).limit(1);
+  if (error) throw paymentsTableError(error);
+  return data?.[0] || null;
+}
+
+/** Atomically moves a payment from one status to another; false if someone else got there first. */
+export async function claimPayment(id, fromStatus, toStatus) {
+  const { data, error } = await getSupabase()
+    .from('payments')
+    .update({ status: toStatus, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', fromStatus)
+    .select('id');
+  if (error) throw paymentsTableError(error);
+  return Boolean(data?.length);
+}
+
+export async function updatePayment(id, patch) {
+  const { error } = await getSupabase()
+    .from('payments')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) console.error('updatePayment:', error.message || error);
+}
+
+/** Best-effort audit row for a saved-card charge. */
+export async function logPayment(row) {
+  try {
+    await insertPayment(row);
+  } catch (e) {
+    console.error('logPayment:', e?.message || e);
+  }
+}
+
+/** Subscribed customers with a saved card, for the monthly billing run. */
+export async function listBillingCandidates() {
+  const { data, error } = await getSupabase()
+    .from('profiles')
+    .select('id, email, address, payment, subscribed, suspended_at, role')
+    .eq('subscribed', true)
+    .not('payment', 'is', null);
+  if (error) throw error;
+  return (data || []).filter((row) => resolveUserRole(row) === 'customer' && row.payment?.token);
 }
 
 export { isDbEnabled };

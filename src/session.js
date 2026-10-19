@@ -137,6 +137,17 @@ async function hydrateForRequest(req, opts = {}) {
   return null;
 }
 
+async function dropDeletedRows(st) {
+  const orderIds = st.deletedOrderIds || [];
+  const pouchIds = st.deletedPouchIds || [];
+  if (!orderIds.length && !pouchIds.length) return;
+  await db.deleteOrdersAndPouches(orderIds, pouchIds);
+  seedOrders = seedOrders.filter((o) => !orderIds.includes(o.id));
+  seedPouches = seedPouches.filter((p) => !pouchIds.includes(p.id));
+  st.deletedOrderIds = [];
+  st.deletedPouchIds = [];
+}
+
 async function persistAfterRequest(req, user, opts = {}) {
   if (!isDbEnabled) return;
   const staff = opts.staff;
@@ -162,6 +173,7 @@ async function persistAfterRequest(req, user, opts = {}) {
   if (user) {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || null;
     const st = store.getMutableState();
+    await dropDeletedRows(st);
     const userOrders = st.orders.filter((o) => o.userId === user.id);
     const userPouches = st.returnPouches.filter((p) => p.userId === user.id);
     const reg = st.registration;
@@ -190,14 +202,15 @@ async function persistAfterRequest(req, user, opts = {}) {
     return;
   }
 
-  const st = store.getMutableState();
-  const guestPurchases = st.orders.filter((o) => o.type === 'רכישה' && !o.userId);
-  if (guestPurchases.length) {
-    const byId = new Map(seedOrders.map((o) => [o.id, o]));
-    for (const o of guestPurchases) byId.set(o.id, o);
-    seedOrders = [...byId.values()];
-    await db.persistGlobalCatalog(st, guestPurchases, []);
-  }
+  await persistGuestPurchases(store.getMutableState());
+}
+
+async function persistGuestPurchases(st) {
+  const known = new Set(seedOrders.map((o) => o.id));
+  const guestPurchases = st.orders.filter((o) => o.type === 'רכישה' && !o.userId && !known.has(o.id));
+  if (!guestPurchases.length) return;
+  seedOrders = [...seedOrders, ...guestPurchases];
+  await db.persistGlobalCatalog(st, guestPurchases, []);
 }
 
 // The store is a module-level singleton, so hydrate -> act -> persist must run
@@ -222,6 +235,93 @@ export async function withRequest(req, fn, opts = {}) {
     () => undefined,
   );
   return run;
+}
+
+function enqueue(task) {
+  const run = requestQueue.then(task);
+  requestQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** Loads one customer's account, runs `action`, and saves it. Must run inside the queue. */
+async function actOnCustomerLocked(customerId, action) {
+  await refreshSeedFromDb();
+  const st = store.getMutableState();
+  store.clearUserSession();
+  const loaded = await db.loadUserSession(customerId, st);
+  if (st.currentUserRole !== 'customer') {
+    const err = new Error('הלקוחה לא נמצאה');
+    err.status = 404;
+    throw err;
+  }
+  store.mergeOrders([...seedOrders, ...loaded.userOrders]);
+  store.mergePouches([...seedPouches, ...loaded.userPouches]);
+  const result = await action();
+  await dropDeletedRows(st);
+  const userOrders = st.orders.filter((o) => o.userId === customerId);
+  const userPouches = st.returnPouches.filter((p) => p.userId === customerId);
+  await db.persistUserSession(customerId, st, userOrders, userPouches, null);
+  seedOrders = mergeById(seedOrders, userOrders);
+  seedPouches = mergeById(seedPouches, userPouches);
+  return result;
+}
+
+/**
+ * Lets an admin act on one customer's account (freeze, cancel, edit details) with the
+ * same store rules the customer gets, then returns the admin's own view.
+ */
+export async function runForCustomer(req, customerId, action) {
+  return enqueue(async () => {
+    await initDbIfNeeded();
+    if (!isDbEnabled) {
+      const err = new Error('הפעולה זמינה רק כשהמערכת מחוברת למסד הנתונים');
+      err.status = 503;
+      throw err;
+    }
+    const { user: staffUser, role } = await requireStaffAccess(req, ['admin']);
+    await actOnCustomerLocked(customerId, action);
+
+    const st = store.getMutableState();
+    store.clearUserSession();
+    st.currentUserId = staffUser.id;
+    st.currentUserRole = role;
+    st.currentUserName = staffUser.email || 'צוות';
+    store.mergeOrders(seedOrders);
+    store.mergePouches(seedPouches);
+    st.staffCustomers = await db.loadStaffCustomers(role);
+    return store.getSnapshot();
+  });
+}
+
+/** Server-initiated work on a customer's account (payment return, monthly billing). */
+export async function actAsCustomer(customerId, action) {
+  return enqueue(async () => {
+    await initDbIfNeeded();
+    if (!isDbEnabled) return action();
+    try {
+      return await actOnCustomerLocked(customerId, action);
+    } finally {
+      store.clearUserSession();
+    }
+  });
+}
+
+/** Server-initiated work with no customer loaded (a guest's paid purchase). */
+export async function actAsGuest(action) {
+  return enqueue(async () => {
+    await initDbIfNeeded();
+    if (!isDbEnabled) return action();
+    await refreshSeedFromDb();
+    store.clearUserSession();
+    store.mergeOrders(seedOrders);
+    store.mergePouches(seedPouches);
+    const result = await action();
+    await persistGuestPurchases(store.getMutableState());
+    return result;
+  });
 }
 
 export async function deleteAllUsers() {

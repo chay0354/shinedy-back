@@ -13,6 +13,7 @@ import { checkSmsCode, issueSmsCode, smsVerificationEnabled } from './smsVerify.
 import { signupProofValid, signupVerifyProof } from './signupProof.js';
 import { heError } from './heError.js';
 import { staffOpenDocument } from './idVault.js';
+import * as payments from './payments.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -192,21 +193,11 @@ app.post('/api/auth/register', async (req, res) => {
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
+      // The membership starts only after the first month is paid on the payment page.
       const snapshot = await session.withRequest(req, () => {
         const st = store.getMutableState();
         st.address = address;
         if (st.registration) st.registration.address = address;
-        if (req.body?.planId) {
-          try {
-            store.subscribe(req.body.planId);
-          } catch (planErr) {
-            console.error('subscribe during register:', planErr?.message || planErr);
-          }
-        }
-        if (req.body?.payment) {
-          st.payment = store.normalizePayment(req.body.payment);
-          if (st.registration && st.payment) st.registration.paymentMethodAdded = true;
-        }
         if (st.registration) {
           st.registration.emailVerified = true;
           st.registration.phoneVerified =
@@ -214,15 +205,6 @@ app.post('/api/auth/register', async (req, res) => {
         }
         return store.getSnapshot();
       });
-      if (req.body?.planId) {
-        try {
-          const savedPlan = await db.saveSubscription(user.id, req.body.planId);
-          if (savedPlan) snapshot.planId = savedPlan;
-          snapshot.subscribed = true;
-        } catch (planErr) {
-          console.error('saveSubscription during register:', planErr?.message || planErr);
-        }
-      }
       const pending = await sendVerifyIfNeeded(snapshot);
       res.json({
         session: {
@@ -362,18 +344,10 @@ app.patch(
       fullName: st.registration?.fullName,
       email: st.registration?.email,
     };
-    if (patch.payment) {
-      st.payment = {
-        holder: String(patch.payment.holder || '').trim(),
-        last4: String(patch.payment.last4 || '').replace(/\D/g, '').slice(-4),
-        expiry: String(patch.payment.expiry || '').trim(),
-      };
-      st.registration.paymentMethodAdded = true;
-    }
     if (patch.address && typeof patch.address === 'object') {
       const next = {
         ...(st.address || {}),
-        ...patch.address,
+        ...store.clientAddress(patch.address),
         street: String(patch.address.street ?? st.address?.street ?? '').trim(),
         houseNo: String(patch.address.houseNo ?? st.address?.houseNo ?? '').trim(),
         apt: String(patch.address.apt ?? st.address?.apt ?? '').trim(),
@@ -387,19 +361,42 @@ app.patch(
   }, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
-app.post('/api/subscribe', wrap((req) => {
-  const payment = store.normalizePayment(req.body?.payment);
-  if (payment) {
-    const st = store.getMutableState();
-    st.payment = payment;
-    if (st.registration) st.registration.paymentMethodAdded = true;
-  }
-  return store.subscribe(req.body.planId);
-}, { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post(
+  '/api/subscribe',
+  wrap((req) => payments.subscribeWithSavedCard(req.body?.planId), {
+    auth: session.isDbEnabled,
+    customerOnly: session.isDbEnabled,
+  }),
+);
 
 app.post('/api/subscribe/change', wrap((req) => store.changePlan(req.body.planId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/purchase', wrap((req) => store.purchaseItem(req.body || {}), { auth: false }));
+app.post('/api/purchase', wrap((req) => payments.purchaseWithSavedCard(req.body || {}), { auth: false }));
+
+app.post('/api/payments/checkout', wrap((req) => payments.startCheckout(req.body || {}), { auth: false }));
+
+// Not queued through wrap(): completing a payment loads the paying customer itself.
+app.post('/api/payments/return', async (req, res) => {
+  try {
+    res.json(await payments.completeCheckout(req.body?.query));
+  } catch (e) {
+    res.status(e.status || 400).json({ error: heError(e.message, 'אימות התשלום נכשל') });
+  }
+});
+
+app.get('/api/cron/billing', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  try {
+    res.json(await payments.runBilling());
+  } catch (e) {
+    console.error('cron billing:', e?.message || e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post(
   '/api/purchases/:id/shipped',
@@ -411,23 +408,35 @@ app.post(
   }),
 );
 
-app.post('/api/subscribe/cancel', wrap(() => store.cancelSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post(
+  '/api/subscribe/cancel',
+  wrap(() => payments.settleAfterAction(store.cancelSubscription()), {
+    auth: session.isDbEnabled,
+    customerOnly: session.isDbEnabled,
+  }),
+);
 
 app.post(
   '/api/subscribe/suspend',
-  wrap(() => store.suspendOwnSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
+  wrap(() => payments.settleAfterAction(store.suspendOwnSubscription()), {
+    auth: session.isDbEnabled,
+    customerOnly: session.isDbEnabled,
+  }),
 );
 
 app.post(
   '/api/subscribe/resume',
-  wrap(() => store.resumeOwnSubscription(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
+  wrap(() => payments.settleAfterAction(store.resumeOwnSubscription()), {
+    auth: session.isDbEnabled,
+    customerOnly: session.isDbEnabled,
+  }),
 );
 
 app.post('/api/cart/add', wrap((req) => store.addToCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post('/api/cart/remove', wrap((req) => store.removeFromCart(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
-app.post('/api/cart/confirm', wrap((req) => store.confirmOrder(req.body || {}), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post('/api/cart/confirm', wrap((req) => payments.confirmOrder(req.body || {}), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post(
   '/api/exchange/toggle-return',
@@ -444,13 +453,16 @@ app.post(
   wrap((req) => store.removeExchangeProduct(req.body.productId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
 );
 
-app.post('/api/exchange/confirm', wrap(() => store.confirmExchange(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
+app.post('/api/exchange/confirm', wrap(() => payments.confirmExchange(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post('/api/returns/last/clear', wrap(() => store.clearLastPouch(), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }));
 
 app.post(
   '/api/returns/:pouchId/cancel',
-  wrap((req) => store.cancelReturnPouch(req.params.pouchId), { auth: session.isDbEnabled, customerOnly: session.isDbEnabled }),
+  wrap((req) => payments.settleAfterAction(store.cancelReturnPouch(req.params.pouchId)), {
+    auth: session.isDbEnabled,
+    customerOnly: session.isDbEnabled,
+  }),
 );
 
 app.patch(
@@ -619,6 +631,32 @@ app.post(
     return store.getSnapshot();
   }, { staff: true, staffRoles: ['admin'] }),
 );
+
+app.post('/api/admin/customers/:id/subscription', async (req, res) => {
+  try {
+    const { action, planId } = req.body || {};
+    const data = await session.runForCustomer(req, req.params.id, async () => {
+      if (action === 'collect') store.retryFailedCharges();
+      else store.staffSubscriptionAction(action, planId);
+      store.accrueSubscriptionCharges();
+      await payments.collectOutstanding();
+    });
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: heError(e.message) });
+  }
+});
+
+app.patch('/api/admin/customers/:id', async (req, res) => {
+  try {
+    const data = await session.runForCustomer(req, req.params.id, () =>
+      store.staffUpdateCustomerDetails(req.body || {}),
+    );
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: heError(e.message) });
+  }
+});
 
 app.patch(
   '/api/admin/membership-terms',
