@@ -446,6 +446,32 @@ async function loadProfile(userId) {
   return data?.[0] || null;
 }
 
+const OUT_WITH_CUSTOMER = new Set(['אצל לקוחה', 'בדרך ללקוחה', 'בדרך חזרה', 'שמור']);
+
+/** Removes a customer account. Jewelry still out with her blocks the delete. */
+export async function deleteCustomerAccount(userId) {
+  const client = getSupabase();
+  if (!client) throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');
+  const profile = await loadProfile(userId);
+  if (!profile || resolveUserRole(profile) !== 'customer') {
+    const err = new Error('אפשר למחוק רק חשבון לקוחה');
+    err.status = 400;
+    throw err;
+  }
+  const { data: units, error: unitsErr } = await client
+    .from('units')
+    .select('id, status')
+    .eq('owner_user_id', userId);
+  if (unitsErr) throw unitsErr;
+  if ((units || []).some((u) => OUT_WITH_CUSTOMER.has(u.status))) {
+    const err = new Error('אי אפשר למחוק — יש תכשיטים אצלה או בדרך. קודם יש להחזיר אותם למלאי');
+    err.status = 409;
+    throw err;
+  }
+  const { error: delErr } = await client.auth.admin.deleteUser(userId);
+  if (delErr) throw delErr;
+}
+
 export async function loadUserSession(userId, state) {
   let profile = await loadProfile(userId);
   if (!profile) {

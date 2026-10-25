@@ -324,6 +324,34 @@ export async function actAsGuest(action) {
   });
 }
 
+export async function deleteCustomer(req, customerId) {
+  return enqueue(async () => {
+    await initDbIfNeeded();
+    if (!isDbEnabled) {
+      const err = new Error('הפעולה זמינה רק כשהמערכת מחוברת למסד הנתונים');
+      err.status = 503;
+      throw err;
+    }
+    const { user: staffUser, role } = await requireStaffAccess(req, ['admin']);
+    if (!customerId || staffUser.id === customerId) {
+      const err = new Error('אי אפשר למחוק את החשבון שממנו את מחוברת');
+      err.status = 400;
+      throw err;
+    }
+    await db.deleteCustomerAccount(customerId);
+    await refreshSeedFromDb();
+    const st = store.getMutableState();
+    store.clearUserSession();
+    st.currentUserId = staffUser.id;
+    st.currentUserRole = role;
+    st.currentUserName = staffUser.email || 'צוות';
+    store.mergeOrders(seedOrders);
+    store.mergePouches(seedPouches);
+    st.staffCustomers = await db.loadStaffCustomers(role);
+    return store.getSnapshot();
+  });
+}
+
 export async function deleteAllUsers() {
   if (!isDbEnabled) {
     throw new Error('המערכת לא מוכנה כרגע. נסי שוב בעוד רגע');

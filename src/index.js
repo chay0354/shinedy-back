@@ -632,6 +632,15 @@ app.post(
   }, { staff: true, staffRoles: ['admin'] }),
 );
 
+app.delete('/api/admin/customers/:id', async (req, res) => {
+  try {
+    const data = await session.deleteCustomer(req, req.params.id);
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 400).json({ error: heError(e.message) });
+  }
+});
+
 app.post('/api/admin/customers/:id/subscription', async (req, res) => {
   try {
     const { action, planId } = req.body || {};
