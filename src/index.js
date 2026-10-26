@@ -14,6 +14,7 @@ import { signupProofValid, signupVerifyProof } from './signupProof.js';
 import { heError } from './heError.js';
 import { staffOpenDocument } from './idVault.js';
 import * as payments from './payments.js';
+import { broadcastMarketing, listMarketingRecipients } from './marketing.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -630,6 +631,22 @@ app.post(
     await session.createStaffCustomer(req.body || {});
     return store.getSnapshot();
   }, { staff: true, staffRoles: ['admin'] }),
+);
+
+app.get(
+  '/api/admin/marketing/recipients',
+  wrap(async () => {
+    const recipients = await listMarketingRecipients();
+    return { count: recipients.length };
+  }, { staff: true, staffRoles: ['admin'] }),
+);
+
+app.post(
+  '/api/admin/marketing/broadcast',
+  wrap(async (req) => broadcastMarketing(req.body || {}), {
+    staff: true,
+    staffRoles: ['admin'],
+  }),
 );
 
 app.delete('/api/admin/customers/:id', async (req, res) => {
