@@ -159,6 +159,8 @@ export async function loadCatalogIntoState(state) {
     points: p.points,
     price: p.price,
     image: p.image || null,
+    modelImage: p.model_image || p.modelImage || null,
+    images: Array.isArray(p.images) ? p.images.filter(Boolean) : [],
     minPlan: catalogMinPlan(p),
   }));
 
