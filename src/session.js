@@ -457,6 +457,17 @@ export async function registerUser({
     console.error('saveSignupLegal after register:', legalErr?.message || legalErr);
     throwHe(legalErr, 502, 'שמירת פרטי האימות נכשלה. נסי שוב');
   }
+  if (idDocumentUrl) {
+    try {
+      const { captureBirthDate } = await import('./birthday.js');
+      await Promise.race([
+        captureBirthDate(data.user.id, idDocumentUrl),
+        new Promise((resolve) => setTimeout(resolve, 12000)),
+      ]);
+    } catch (birthErr) {
+      console.error('birth date:', birthErr?.message || birthErr);
+    }
+  }
 
   const { getAuthClient } = await import('./supabase.js');
   const authClient = getAuthClient();

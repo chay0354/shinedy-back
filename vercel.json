@@ -2,7 +2,10 @@
   "version": 2,
   "builds": [{ "src": "api/index.js", "use": "@vercel/node" }],
   "routes": [{ "src": "/(.*)", "dest": "api/index.js" }],
-  "crons": [{ "path": "/api/cron/billing", "schedule": "0 7 * * *" }],
+  "crons": [
+    { "path": "/api/cron/billing", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/birthdays", "schedule": "0 6 1 * *" }
+  ],
   "env": {
     "NODE_OPTIONS": "--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=500"
   }

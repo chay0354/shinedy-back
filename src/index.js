@@ -15,6 +15,7 @@ import { heError } from './heError.js';
 import { staffOpenDocument } from './idVault.js';
 import * as payments from './payments.js';
 import { broadcastMarketing, listMarketingRecipients } from './marketing.js';
+import { streetExists, suggestCities, suggestStreets } from './addressSuggest.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -162,6 +163,24 @@ app.post('/api/auth/check-signup', async (req, res) => {
   }
 });
 
+app.get('/api/addresses/cities', async (req, res) => {
+  try {
+    const cities = await suggestCities(req.query.q);
+    res.json({ cities });
+  } catch (e) {
+    res.status(e.status || 503).json({ error: heError(e.message, 'לא ניתן לטעון יישובים כרגע') });
+  }
+});
+
+app.get('/api/addresses/streets', async (req, res) => {
+  try {
+    const streets = await suggestStreets(req.query.city, req.query.q);
+    res.json({ streets });
+  } catch (e) {
+    res.status(e.status || 503).json({ error: heError(e.message, 'לא ניתן לטעון רחובות כרגע') });
+  }
+});
+
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email: rawEmail, password, fullName, phone, address: rawAddress } = req.body || {};
@@ -180,6 +199,11 @@ app.post('/api/auth/register', async (req, res) => {
     };
     if (!address.street || !address.houseNo || !address.city) {
       throw new Error('יש למלא כתובת למשלוח (רחוב, מספר בית ועיר)');
+    }
+    if (!(await streetExists(address.street, address.city))) {
+      const err = new Error('יש לבחור רחוב ויישוב קיימים מתוך הרשימה');
+      err.status = 400;
+      throw err;
     }
     const legal = parseSignupLegal(req.body);
     legal.signupIp = clientIp(req);
@@ -382,6 +406,21 @@ app.post('/api/payments/return', async (req, res) => {
     res.json(await payments.completeCheckout(req.body?.query));
   } catch (e) {
     res.status(e.status || 400).json({ error: heError(e.message, 'אימות התשלום נכשל') });
+  }
+});
+
+app.get('/api/cron/birthdays', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  try {
+    const { runBirthdaySms } = await import('./birthday.js');
+    res.json(await runBirthdaySms());
+  } catch (e) {
+    console.error('cron birthdays:', e?.message || e);
+    res.status(500).json({ error: e.message });
   }
 });
 

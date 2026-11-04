@@ -91,6 +91,35 @@ function deliveryError(status) {
   return err;
 }
 
+export async function sendCustomerSms(to, body) {
+  const auth = accountAuth();
+  const { from, messagingSid, alpha } = senderConfig();
+  if (!auth || (!from && !messagingSid && !alpha)) return { ok: false, error: 'sms-off' };
+  const dest = destination(to);
+  if (!dest) return { ok: false, error: 'bad-phone' };
+  const text = String(body || '').trim();
+  if (text.length < 4) return { ok: false, error: 'empty' };
+  const attempts = [];
+  if (alpha) {
+    const named = { To: dest, Body: text, From: alpha };
+    if (messagingSid) named.MessagingServiceSid = messagingSid;
+    attempts.push(named);
+  }
+  if (from || messagingSid) {
+    const fallback = { To: dest, Body: text };
+    if (messagingSid) fallback.MessagingServiceSid = messagingSid;
+    else fallback.From = from;
+    attempts.push(fallback);
+  }
+  let last = null;
+  for (const params of attempts) {
+    last = await postTwilioMessage(auth, params);
+    if (last.ok) return { ok: true };
+  }
+  console.error('customer SMS failed:', last?.status, last?.data?.code);
+  return { ok: false, error: 'send-failed' };
+}
+
 async function sendViaSender(to, code) {
   const auth = accountAuth();
   const { from, messagingSid, alpha } = senderConfig();
