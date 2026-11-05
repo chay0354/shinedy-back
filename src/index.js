@@ -14,7 +14,14 @@ import { signupProofValid, signupVerifyProof } from './signupProof.js';
 import { heError } from './heError.js';
 import { staffOpenDocument } from './idVault.js';
 import * as payments from './payments.js';
-import { broadcastMarketing, listMarketingRecipients } from './marketing.js';
+import {
+  broadcastMarketing,
+  listMarketingRecipients,
+  marketingOverview,
+  setMarketingOptIn,
+  unsubscribeByToken,
+} from './marketing.js';
+import { BIRTHDAY_SMS, getBirthdayText, saveBirthdayText } from './birthday.js';
 import { streetExists, suggestCities, suggestStreets } from './addressSuggest.js';
 
 const app = express();
@@ -677,14 +684,53 @@ app.get(
   wrap(async () => {
     const recipients = await listMarketingRecipients();
     return { count: recipients.length };
-  }, { staff: true, staffRoles: ['admin'] }),
+  }, { staff: true, staffRoles: ['admin'], skipStaffCustomers: true }),
 );
+
+app.get(
+  '/api/admin/marketing',
+  wrap(async () => ({
+    ...(await marketingOverview()),
+    birthdayText: await getBirthdayText(),
+    birthdayDefault: BIRTHDAY_SMS,
+  }), { staff: true, staffRoles: ['admin'], skipStaffCustomers: true, skipPersist: true }),
+);
+
+app.put(
+  '/api/admin/marketing/birthday',
+  wrap(async (req) => ({ birthdayText: await saveBirthdayText(req.body?.text) }), {
+    staff: true,
+    staffRoles: ['admin'],
+    skipStaffCustomers: true,
+    skipPersist: true,
+  }),
+);
+
+app.post(
+  '/api/admin/customers/:id/marketing',
+  wrap(async (req) => {
+    await setMarketingOptIn(req.params.id, Boolean(req.body?.optIn));
+    const st = store.getMutableState();
+    st.staffCustomers = await db.loadStaffCustomers(st.currentUserRole || 'admin');
+    return store.getSnapshot();
+  }, { staff: true, staffRoles: ['admin'], skipStaffCustomers: true, skipPersist: true }),
+);
+
+app.post('/api/unsubscribe', async (req, res) => {
+  try {
+    res.json(await unsubscribeByToken(req.body?.token));
+  } catch (e) {
+    res.status(e.status || 400).json({ error: heError(e.message, 'ההסרה נכשלה. נסי שוב') });
+  }
+});
 
 app.post(
   '/api/admin/marketing/broadcast',
   wrap(async (req) => broadcastMarketing(req.body || {}), {
     staff: true,
     staffRoles: ['admin'],
+    skipStaffCustomers: true,
+    skipPersist: true,
   }),
 );
 

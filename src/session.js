@@ -246,6 +246,11 @@ function enqueue(task) {
   return run;
 }
 
+/** Runs `task` after in-flight requests so it can't race a customer's session save. */
+export function runQueued(task) {
+  return enqueue(task);
+}
+
 /** Loads one customer's account, runs `action`, and saves it. Must run inside the queue. */
 async function actOnCustomerLocked(customerId, action) {
   await refreshSeedFromDb();

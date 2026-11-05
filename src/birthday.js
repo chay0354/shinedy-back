@@ -2,9 +2,31 @@ import { getSupabase, isDbEnabled } from './supabase.js';
 import { resolveUserRole } from './db.js';
 import { ID_BUCKET, isDataUrl, storagePathFromRef } from './idVault.js';
 import { sendCustomerSms } from './smsVerify.js';
+import { getSetting, setSetting } from './settings.js';
+import { isOptedIn, smsWithOptOut } from './marketing.js';
 
 export const BIRTHDAY_SMS =
   'מזל טוב מ-Shinedy! החודש יום ההולדת שלך, ומחכה לך הטבת יום הולדת. לפרטים היכנסי לחשבון או כתבי ל-service@shinedy.co';
+
+export async function getBirthdayText() {
+  return String(await getSetting('birthdaySms', BIRTHDAY_SMS));
+}
+
+export async function saveBirthdayText(raw) {
+  const text = String(raw || '').trim();
+  if (text.length < 8) {
+    const err = new Error('יש לכתוב הודעה של לפחות כמה מילים');
+    err.status = 400;
+    throw err;
+  }
+  if (text.length > 600) {
+    const err = new Error('ההודעה ארוכה מדי');
+    err.status = 400;
+    throw err;
+  }
+  await setSetting('birthdaySms', text === BIRTHDAY_SMS ? '' : text);
+  return text;
+}
 
 const OCR_LIMIT = 12
 
@@ -138,9 +160,12 @@ export async function runBirthdaySms(now = new Date()) {
   summary.month = today.month;
   summary.year = today.year;
   const client = getSupabase();
-  const { data, error } = await client.from('profiles').select('id, phone, email, role, address, id_document_url');
+  const { data, error } = await client
+    .from('profiles')
+    .select('id, phone, email, role, address, id_document_url, notices_accepted_at');
   if (error) throw error;
   const rows = (data || []).filter((row) => resolveUserRole(row) === 'customer');
+  const message = await getBirthdayText();
   let ocrUsed = 0;
   try {
     for (const row of rows) {
@@ -167,11 +192,11 @@ export async function runBirthdaySms(now = new Date()) {
       summary.dated += 1;
       const month = Number(birthDate.slice(5, 7));
       if (month !== today.month) continue;
-      if (Number(address.birthdaySmsYear) === today.year) {
+      if (Number(address.birthdaySmsYear) === today.year || !isOptedIn(row)) {
         summary.skipped += 1;
         continue;
       }
-      const result = await sendCustomerSms(row.phone, BIRTHDAY_SMS);
+      const result = await sendCustomerSms(row.phone, smsWithOptOut(message, row.id));
       if (!result.ok) {
         summary.failed += 1;
         continue;

@@ -7,9 +7,19 @@ import { actAsCustomer, actAsGuest, isDbEnabled } from './session.js';
 /**
  * How money is taken:
  * - 'hyp': real charges through the Hyp payment page and saved-card tokens.
- * - 'simulated': demo mode without a database; every payment succeeds.
+ * - 'simulated': no charge. Used when PAYMENTS_OFF=1, or when there is no database.
  */
+function paymentsOff() {
+  const value = String(process.env.PAYMENTS_OFF || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+if (paymentsOff()) {
+  console.log('Payments are off: checkout completes without a charge');
+}
+
 export function gatewayMode() {
+  if (paymentsOff()) return 'simulated';
   if (hyp.isHypConfigured()) return 'hyp';
   if (!isDbEnabled) return 'simulated';
   return 'off';
@@ -229,8 +239,7 @@ export async function startCheckout(body = {}) {
   const id = newPaymentId();
   if (mode === 'simulated') {
     const paid = simulatedPaid();
-    const card = { token: `SIM${Date.now()}`, tokef: '3012', last4: '4242', holder: st.currentUserName };
-    applyIntent(kind, intent, paid, card);
+    if (kind !== 'card') applyIntent(kind, intent, paid, null);
     return { ...store.getSnapshot(), paymentCompleted: true, paymentKind: kind };
   }
 
