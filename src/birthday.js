@@ -196,7 +196,7 @@ export async function runBirthdaySms(now = new Date()) {
         summary.skipped += 1;
         continue;
       }
-      const result = await sendCustomerSms(row.phone, smsWithOptOut(message, row.id));
+      const result = await sendCustomerSms(row.phone, smsWithOptOut(message), { replyable: true });
       if (!result.ok) {
         summary.failed += 1;
         continue;

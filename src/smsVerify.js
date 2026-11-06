@@ -1,4 +1,4 @@
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { toE164 } from './contactIdentity.js';
 import { rememberQaOtp } from './qaOtp.js';
 import { clearPendingOtp, loadPendingOtp, savePendingOtp } from './pendingOtp.js';
@@ -91,7 +91,25 @@ function deliveryError(status) {
   return err;
 }
 
-export async function sendCustomerSms(to, body) {
+export function twilioRequestValid(req) {
+  const auth = accountAuth();
+  const signature = String(req.get('x-twilio-signature') || '');
+  if (!auth || !signature) return false;
+  const configured = String(process.env.SMS_WEBHOOK_URL || '').trim();
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  const url = configured || `${proto}://${host}${req.originalUrl}`;
+  const params = req.body && typeof req.body === 'object' ? req.body : {};
+  const payload = Object.keys(params)
+    .sort()
+    .reduce((sum, key) => sum + key + params[key], url);
+  const expected = createHmac('sha1', auth.token).update(payload).digest('base64');
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signature);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export async function sendCustomerSms(to, body, { replyable = false } = {}) {
   const auth = accountAuth();
   const { from, messagingSid, alpha } = senderConfig();
   if (!auth || (!from && !messagingSid && !alpha)) return { ok: false, error: 'sms-off' };
@@ -99,6 +117,13 @@ export async function sendCustomerSms(to, body) {
   if (!dest) return { ok: false, error: 'bad-phone' };
   const text = String(body || '').trim();
   if (text.length < 4) return { ok: false, error: 'empty' };
+  if (replyable) {
+    if (!from) return { ok: false, error: 'sms-off' };
+    const sent = await postTwilioMessage(auth, { To: dest, Body: text, From: from });
+    if (sent.ok) return { ok: true };
+    console.error('customer SMS failed:', sent.status, sent.data?.code);
+    return { ok: false, error: 'send-failed' };
+  }
   const attempts = [];
   if (alpha) {
     const named = { To: dest, Body: text, From: alpha };

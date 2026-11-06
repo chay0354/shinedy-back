@@ -20,8 +20,10 @@ import {
   listMarketingRecipients,
   marketingOverview,
   setMarketingOptIn,
+  unsubscribeBySms,
   unsubscribeByToken,
 } from './marketing.js';
+import { twilioRequestValid } from './smsVerify.js';
 import { BIRTHDAY_SMS, getBirthdayText, saveBirthdayText } from './birthday.js';
 import { streetExists, suggestCities, suggestStreets } from './addressSuggest.js';
 
@@ -720,6 +722,28 @@ app.post(
     return store.getSnapshot();
   }, { staff: true, staffRoles: ['admin'], skipStaffCustomers: true, skipPersist: true }),
 );
+
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+app.post('/api/sms/inbound', express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    if (!twilioRequestValid(req)) {
+      res.status(403).type('text/xml').send('<Response></Response>');
+      return;
+    }
+    const reply = await unsubscribeBySms(req.body?.From, req.body?.Body);
+    const message = reply ? `<Message>${escapeXml(reply)}</Message>` : '';
+    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response>${message}</Response>`);
+  } catch (e) {
+    console.error('sms inbound:', e.message || e);
+    res.status(e.status || 500).type('text/xml').send('<Response></Response>');
+  }
+});
 
 app.post('/api/unsubscribe', async (req, res) => {
   try {

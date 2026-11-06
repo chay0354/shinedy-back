@@ -41,7 +41,7 @@ const SHIPMENT_TYPES = new Set(['הזמנה', 'הזמנה ראשונה', 'החל
 const DELIVERED_STATUSES = new Set(['נשלח', 'נשלחה', 'נמסרה']);
 const BOX_ORDER_TYPES = new Set(['הזמנה', 'הזמנה ראשונה', 'החלפה']);
 // Ledger keys live inside profile.address; never let a client payload overwrite them.
-const ADDRESS_LEDGER_KEYS = ['charges', 'shippingCharges', 'pauses', 'billingStart', 'canceledAt', 'lastPlanId', 'birthDate', 'birthdaySmsYear', 'marketingOptOutAt'];
+const ADDRESS_LEDGER_KEYS = ['charges', 'shippingCharges', 'pauses', 'billingStart', 'canceledAt', 'lastPlanId', 'birthDate', 'birthdaySmsYear', 'marketingOptOutAt', 'unsub'];
 
 export function clientAddress(raw) {
   if (!raw || typeof raw !== 'object') return {};
