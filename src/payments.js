@@ -3,15 +3,15 @@ import * as store from './store.js';
 import * as hyp from './hyp.js';
 import * as db from './db.js';
 import { actAsCustomer, actAsGuest, isDbEnabled } from './session.js';
+import { paymentsAreOff } from './paymentsMode.js';
 
 /**
  * How money is taken:
  * - 'hyp': real charges through the Hyp payment page and saved-card tokens.
- * - 'simulated': no charge. Used when PAYMENTS_OFF=1, or when there is no database.
+ * - 'simulated': no charge. This is the default until PAYMENTS_ON=1.
  */
 function paymentsOff() {
-  const value = String(process.env.PAYMENTS_OFF || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
+  return paymentsAreOff();
 }
 
 if (paymentsOff()) {

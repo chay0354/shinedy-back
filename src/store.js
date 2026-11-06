@@ -1,4 +1,5 @@
 import { isDbEnabled } from './supabase.js';
+import { paymentsAreOff } from './paymentsMode.js';
 import { loadMembershipTerms, saveMembershipTerms } from './membershipTerms.js';
 import { attachCourierJob, planRequiresDeliverySignature, resolveCourierJob } from './courierJob.js';
 import { hasIdDocument, maskNationalId } from './idVault.js';
@@ -854,7 +855,7 @@ export function getSnapshot() {
     nextShipFee: staff ? undefined : nextShipmentFee(),
     nextFreeShipmentAt: staff ? undefined : nextFreeShipmentAt(),
     charges: staff ? undefined : [...chargesLedger()].sort((a, b) => String(b.at).localeCompare(String(a.at))),
-    paymentUsable: staff ? undefined : !isDbEnabled || paymentIsUsable(state.payment),
+    paymentUsable: staff ? undefined : paymentsAreOff() || !isDbEnabled || paymentIsUsable(state.payment),
     payment: paymentView(state.payment),
     billingIssue: staff
       ? undefined

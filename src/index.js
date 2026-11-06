@@ -14,6 +14,7 @@ import { signupProofValid, signupVerifyProof } from './signupProof.js';
 import { heError } from './heError.js';
 import { staffOpenDocument } from './idVault.js';
 import * as payments from './payments.js';
+import { paymentsAreOff } from './paymentsMode.js';
 import {
   broadcastMarketing,
   listMarketingRecipients,
@@ -128,6 +129,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     mock: process.env.MOCK_MODE === 'true',
     database: session.isDbEnabled,
+    paymentsRequired: !paymentsAreOff(),
     config: getConfigStatus(),
   });
 });
@@ -225,8 +227,8 @@ app.post('/api/auth/register', async (req, res) => {
       });
       await db.ensureAdminByEmail(user.id, email);
       req.headers.authorization = `Bearer ${authSession.access_token}`;
-      // The membership starts only after the first month is paid on the payment page.
-      const snapshot = await session.withRequest(req, () => {
+      // While charges are off, the chosen plan starts here and the payment page is skipped.
+      const snapshot = await session.withRequest(req, async () => {
         const st = store.getMutableState();
         st.address = address;
         if (st.registration) st.registration.address = address;
@@ -234,6 +236,9 @@ app.post('/api/auth/register', async (req, res) => {
           st.registration.emailVerified = true;
           st.registration.phoneVerified =
             !smsVerificationEnabled() || signupProofValid('sms', mobile, req.body?.phoneProof);
+        }
+        if (req.body?.planId && payments.gatewayMode() === 'simulated') {
+          await payments.startCheckout({ kind: 'subscription', planId: req.body.planId });
         }
         return store.getSnapshot();
       });

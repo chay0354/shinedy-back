@@ -196,6 +196,12 @@ function usesOwnSender() {
   return Boolean(from || messagingSid);
 }
 
+function skipQaSms() {
+  if (process.env.NODE_ENV === 'production') return false;
+  const value = String(process.env.QA_SMS_SKIP || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
 export async function issueSmsCode(phone) {
   const to = toE164(phone);
   if (!to) {
@@ -219,7 +225,7 @@ export async function issueSmsCode(phone) {
       attempts: 0,
     };
     rememberQaOtp('sms', to, code);
-    await sendViaSender(to, code);
+    if (!skipQaSms()) await sendViaSender(to, code);
     await savePendingOtp('sms', to, row);
   } else {
     await sendViaVerify(to);
